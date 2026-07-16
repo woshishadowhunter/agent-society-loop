@@ -18,6 +18,7 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
+from agent_society_loop.deterministic import build_demo_engine
 from agent_society_loop.scheduler import (
     ClaimStatus,
     TaskClaim,
@@ -129,6 +130,39 @@ class SchedulerStorageTests(unittest.TestCase):
             self.first.heartbeat_worker(
                 "worker-a", "session-a", now=PLUS_15, ttl_seconds=10
             )
+
+    def test_v07_database_opens_with_additive_scheduler_schema(self):
+        self.second.close()
+        self.first.close()
+        legacy_path = Path(self.directory.name) / "legacy.db"
+        connection = sqlite3.connect(legacy_path)
+        connection.executescript(
+            """
+            CREATE TABLE legacy_evidence (identity TEXT PRIMARY KEY);
+            INSERT INTO legacy_evidence(identity) VALUES ('v0.7');
+            """
+        )
+        connection.commit()
+        connection.close()
+
+        self.first = SQLiteRepository(legacy_path)
+        self.second = SQLiteRepository(legacy_path)
+
+        tables = {
+            row[0]
+            for row in self.first.connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        self.assertTrue(
+            {"scheduler_workers", "task_claim_fences", "task_claims"}.issubset(tables)
+        )
+        self.assertEqual(
+            self.first.connection.execute(
+                "SELECT identity FROM legacy_evidence"
+            ).fetchone()[0],
+            "v0.7",
+        )
 
 
 class SchedulerClaimTests(unittest.TestCase):
@@ -454,6 +488,38 @@ class SchedulerOutcomeTests(unittest.TestCase):
         self.assertEqual(
             self.first.get_claim(accepted.claim_id).status, ClaimStatus.EXPIRED
         )
+
+
+class SchedulerEngineBoundaryTests(unittest.TestCase):
+    def test_legacy_engine_refuses_to_recover_scheduler_owned_task(self):
+        repository = SQLiteRepository(":memory:")
+        engine = build_demo_engine(repository)
+        goal = replace(
+            Goal.create("Owned", "Do not bypass lease", goal_id="owned"),
+            status=GoalStatus.RUNNING,
+        )
+        repository.save_goal(goal)
+        repository.save_task(
+            Task.create("owned", "market", "market_analysis", "Analyze")
+        )
+        repository.register_worker(
+            WorkerSession.create(
+                "process-a", "session-a", ("market_analysis",),
+                now=AT, ttl_seconds=60,
+            )
+        )
+        claim = repository.claim_task(
+            "owned", "market", "process-a", "session-a", "market-analyst",
+            now=AT, lease_seconds=30,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "active scheduler claim"):
+            engine.resume("owned")
+
+        self.assertEqual(repository.get_claim(claim.claim_id).status, ClaimStatus.ACTIVE)
+        self.assertEqual(repository.list_tasks("owned")[0].status, TaskStatus.RUNNING)
+        self.assertEqual(repository.get_goal("owned").status, GoalStatus.RUNNING)
+        repository.close()
 
 
 if __name__ == "__main__":

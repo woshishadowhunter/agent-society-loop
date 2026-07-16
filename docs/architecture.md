@@ -9,8 +9,9 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | Module | Responsibility |
 | --- | --- |
 | `domain.py` | States, immutable data contracts, validation, task DAG checks |
-| `ports.py` | Planner, worker, reviewer, and model provider protocols |
+| `ports.py` | Planner, worker, reviewer, model provider, and scheduler repository protocols |
 | `storage.py` | SQLite schema and durable repository operations |
+| `scheduler.py` | Worker sessions, task claims, lease/fencing contracts, and deterministic safety campaign |
 | `memory.py` | Context assembly, knowledge retrieval, performance aggregation |
 | `selection.py` | Eligible-agent filtering and explainable ranking |
 | `engine.py` | Goal lifecycle, outer loop, inner loop, budgets, resume |
@@ -98,6 +99,7 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Evaluation memory: benchmark digests, per-case outcomes, gate metrics, promotion identity, and active deployments.
 - Delegation memory: pinned card identity, durable message and remote task IDs, poll state, normalized result digest, and sanitized terminal category.
 - Governance memory: canonical policy digests, task-type activations, imported conformance attestations, and immutable per-attempt ALLOW/DENY decisions.
+- Scheduler memory: worker sessions, claim history, lease deadlines, and monotonic task-local fencing tokens.
 
 SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. This keeps the database inspectable while preserving typed Python contracts.
 
@@ -130,6 +132,28 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - A2A sends persist `submitting` first; timeout, connection loss, 5xx, or malformed success becomes terminal `unknown` and is never automatically resent.
 - Remote output accepts bounded text and structured data only; local review still decides PASS or FAIL.
 - Existing accepted/completed delegations resume using stored authority; current policy changes never trigger a resend.
+- Claim acquisition serializes through a short transaction that revalidates worker session, running goal, pending task, and succeeded dependencies.
+- One partial unique index permits at most one active claim per task; every replacement receives a larger fencing token.
+- Outcome commits revalidate exact live ownership and atomically persist artifact, review, attempt, performance, events, final task state, and terminal claim state.
+- Expired local work returns to pending, while ambiguous or interrupted remote work blocks rather than replaying an unsafe side effect.
+- SQLite WAL scheduler guarantees apply only to processes on one host; external side effects are outside the local fencing boundary.
+- The synchronous engine fails closed when a goal has an active scheduler claim, so legacy interruption recovery cannot bypass lease ownership.
+
+## Scheduler claim state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: atomic claim + next token
+    active --> active: exact-owner renewal
+    active --> committed: fenced atomic outcome
+    active --> released: exact-owner release
+    active --> expired: explicit reap at deadline
+    expired --> [*]
+    released --> [*]
+    committed --> [*]
+```
+
+An expired claim never becomes active again. Recovery changes an eligible running task to pending, then a new claim creates a new identity with a strictly larger token. No database lock is held while a model, tool, or remote agent executes.
 
 ## Extension example
 
