@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
@@ -202,3 +204,204 @@ class TaskClaim:
             finished_at=current,
             reason=_bounded_reason(reason),
         )
+
+
+def run_scheduler_self_test(
+    database_path: str | Path | None = None,
+) -> dict[str, object]:
+    """Run a deterministic two-connection scheduler safety campaign."""
+
+    names = (
+        "exclusive_claim",
+        "lease_renewal",
+        "monotonic_reclaim",
+        "stale_commit_rejected",
+        "current_commit",
+    )
+    checks = {
+        name: {"name": name, "passed": False, "detail": "not reached"}
+        for name in names
+    }
+
+    def execute(path: Path) -> None:
+        from .domain import (
+            Artifact,
+            Attempt,
+            Event,
+            Goal,
+            GoalStatus,
+            PerformanceRecord,
+            Review,
+            Task,
+            TaskStatus,
+            Verdict,
+        )
+        from .storage import SQLiteRepository
+
+        at = "2026-07-16T00:00:00+00:00"
+        plus_5 = "2026-07-16T00:00:05+00:00"
+        plus_10 = "2026-07-16T00:00:10+00:00"
+        plus_11 = "2026-07-16T00:00:11+00:00"
+        first = SQLiteRepository(path)
+        second = SQLiteRepository(path)
+        try:
+            goal = replace(
+                Goal.create("Scheduler self-test", "Verify lease safety", goal_id="self-test"),
+                status=GoalStatus.RUNNING,
+            )
+            first.save_goal(goal)
+            first.save_task(
+                Task.create("self-test", "claim", "analysis", "Verify ownership")
+            )
+            for worker_id, session_id in (
+                ("worker-a", "session-a"),
+                ("worker-b", "session-b"),
+            ):
+                first.register_worker(
+                    WorkerSession.create(
+                        worker_id,
+                        session_id,
+                        ("analysis",),
+                        now=at,
+                        ttl_seconds=60,
+                    )
+                )
+
+            old = first.claim_task(
+                "self-test", "claim", "worker-a", "session-a", "agent-a",
+                now=at, lease_seconds=10,
+            )
+            contender = second.claim_task(
+                "self-test", "claim", "worker-b", "session-b", "agent-b",
+                now=plus_5, lease_seconds=10,
+            )
+            exclusive = old is not None and contender is None
+            checks["exclusive_claim"].update(
+                passed=exclusive,
+                detail="one active owner across two SQLite connections",
+            )
+            if old is None:
+                raise RuntimeError("initial claim was not acquired")
+
+            renewed = first.renew_claim(
+                old.claim_id,
+                old.worker_id,
+                old.session_id,
+                old.fencing_token,
+                now=plus_5,
+                lease_seconds=5,
+            )
+            checks["lease_renewal"].update(
+                passed=renewed.expires_at == plus_10,
+                detail="exact owner renewed lease to the expected deadline",
+            )
+
+            first.reap_expired_claims(now=plus_10)
+            current = second.claim_task(
+                "self-test", "claim", "worker-b", "session-b", "agent-b",
+                now=plus_10, lease_seconds=10,
+            )
+            monotonic = (
+                current is not None
+                and current.fencing_token > renewed.fencing_token
+            )
+            checks["monotonic_reclaim"].update(
+                passed=monotonic,
+                detail="replacement claim received a larger fencing token",
+            )
+            if current is None:
+                raise RuntimeError("replacement claim was not acquired")
+
+            stale_artifact = Artifact.create(
+                "self-test", "claim", "agent-a", "stale result"
+            )
+            stale_review = Review.create(
+                "self-test", "claim", 1, Verdict.PASS, 90, [], "stale"
+            )
+            stale_attempt = Attempt.create(
+                "self-test", "claim", "agent-a", 1, 1.0,
+                stale_artifact.artifact_id, stale_review.review_id,
+            )
+            stale_task = replace(
+                first.list_tasks("self-test")[0],
+                status=TaskStatus.SUCCEEDED,
+                artifact_id=stale_artifact.artifact_id,
+            )
+            rejected = False
+            try:
+                first.commit_claim_outcome(
+                    old,
+                    stale_task,
+                    stale_artifact,
+                    stale_attempt,
+                    stale_review,
+                    PerformanceRecord("agent-a", "analysis", 1, 1, 90.0, 1.0),
+                    [Event.create("self-test", "task.attempt_completed", {})],
+                    now=plus_11,
+                )
+            except StaleClaim:
+                rejected = True
+            no_partial_write = (
+                not first.list_artifacts("self-test", "claim")
+                and not first.list_attempts("self-test", "claim")
+                and not first.list_reviews("self-test", "claim")
+            )
+            checks["stale_commit_rejected"].update(
+                passed=rejected and no_partial_write,
+                detail="expired token was rejected without partial outcome records",
+            )
+
+            artifact = Artifact.create(
+                "self-test", "claim", "agent-b", "current result"
+            )
+            review = Review.create(
+                "self-test", "claim", 1, Verdict.PASS, 95, [], "current"
+            )
+            attempt = Attempt.create(
+                "self-test", "claim", "agent-b", 1, 1.0,
+                artifact.artifact_id, review.review_id,
+            )
+            succeeded = replace(
+                second.list_tasks("self-test")[0],
+                status=TaskStatus.SUCCEEDED,
+                artifact_id=artifact.artifact_id,
+            )
+            committed = second.commit_claim_outcome(
+                current,
+                succeeded,
+                artifact,
+                attempt,
+                review,
+                PerformanceRecord("agent-b", "analysis", 1, 1, 95.0, 1.0),
+                [Event.create("self-test", "task.attempt_completed", {})],
+                now=plus_11,
+            )
+            current_ok = (
+                committed.status == ClaimStatus.COMMITTED
+                and second.list_tasks("self-test")[0].status == TaskStatus.SUCCEEDED
+                and len(second.list_artifacts("self-test", "claim")) == 1
+                and len(second.list_attempts("self-test", "claim")) == 1
+            )
+            checks["current_commit"].update(
+                passed=current_ok,
+                detail="current token committed one complete durable outcome",
+            )
+        finally:
+            second.close()
+            first.close()
+
+    try:
+        if database_path is None:
+            with tempfile.TemporaryDirectory() as directory:
+                execute(Path(directory) / "scheduler-self-test.db")
+        else:
+            execute(Path(database_path))
+    except Exception as error:
+        first_failed = next(
+            (item for item in checks.values() if not item["passed"]), None
+        )
+        if first_failed is not None:
+            first_failed["detail"] = f"{type(error).__name__}: {_bounded_reason(str(error))}"
+
+    ordered = [checks[name] for name in names]
+    return {"passed": all(item["passed"] for item in ordered), "checks": ordered}

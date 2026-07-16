@@ -39,6 +39,7 @@ from .domain import (
     PolicyVerdict,
     RunBudget,
     Task,
+    utc_now,
 )
 from .engine import LoopEngine, resolve_approval
 from .evaluation import BenchmarkEvaluator, PromotionPolicy
@@ -52,6 +53,7 @@ from .maintenance import (
 from .memory import MemoryManager
 from .providers import OpenAICompatibleProvider
 from .selection import PerformanceWeightedSelector
+from .scheduler import parse_utc, run_scheduler_self_test
 from .storage import SQLiteRepository
 from .tracing import TraceRecorder
 
@@ -461,6 +463,37 @@ def build_parser() -> argparse.ArgumentParser:
     deployments.add_argument("--db", default="agent-society.db")
     deployments.add_argument("--json", action="store_true")
 
+    scheduler = commands.add_parser(
+        "scheduler", help="inspect and recover fenced task leases"
+    )
+    scheduler_commands = scheduler.add_subparsers(
+        dest="scheduler_command", required=True
+    )
+    scheduler_workers = scheduler_commands.add_parser(
+        "workers", help="list durable worker sessions"
+    )
+    scheduler_workers.add_argument("--at")
+    scheduler_workers.add_argument("--db", default="agent-society.db")
+    scheduler_workers.add_argument("--json", action="store_true")
+    scheduler_claims = scheduler_commands.add_parser(
+        "claims", help="list task claim history"
+    )
+    scheduler_claims.add_argument("--goal-id")
+    scheduler_claims.add_argument("--at")
+    scheduler_claims.add_argument("--db", default="agent-society.db")
+    scheduler_claims.add_argument("--json", action="store_true")
+    scheduler_reap = scheduler_commands.add_parser(
+        "reap", help="recover task claims expired at an explicit UTC time"
+    )
+    scheduler_reap.add_argument("--at", required=True)
+    scheduler_reap.add_argument("--db", default="agent-society.db")
+    scheduler_reap.add_argument("--json", action="store_true")
+    scheduler_self_test = scheduler_commands.add_parser(
+        "self-test", help="run the deterministic scheduler safety campaign"
+    )
+    scheduler_self_test.add_argument("--db", default=":memory:")
+    scheduler_self_test.add_argument("--json", action="store_true")
+
     a2a = commands.add_parser("a2a", help="manage pinned A2A 1.0 remote agents")
     a2a_commands = a2a.add_subparsers(dest="a2a_command", required=True)
     inspect_card = a2a_commands.add_parser(
@@ -691,6 +724,35 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = engine.run(goal.goal_id)
             _emit(report, args.json, f"Goal {report.goal_id}: {report.status.value}")
             return 0 if report.status.value == "succeeded" else 1
+
+        if args.command == "scheduler":
+            if args.scheduler_command == "self-test":
+                value = run_scheduler_self_test()
+                _emit(
+                    value,
+                    args.json,
+                    f"Scheduler safety: {'pass' if value['passed'] else 'fail'}",
+                )
+                return 0 if value["passed"] else 1
+            inspected_at = args.at or utc_now()
+            parse_utc(inspected_at)
+            if args.scheduler_command == "workers":
+                value = [
+                    {**_jsonable(worker), "expired": worker.is_expired(inspected_at)}
+                    for worker in repository.list_workers()
+                ]
+                _emit(value, args.json, f"{len(value)} worker sessions")
+                return 0
+            if args.scheduler_command == "claims":
+                value = [
+                    {**_jsonable(claim), "lease_expired": claim.is_expired(inspected_at)}
+                    for claim in repository.list_claims(args.goal_id)
+                ]
+                _emit(value, args.json, f"{len(value)} task claims")
+                return 0
+            value = repository.reap_expired_claims(now=inspected_at)
+            _emit(value, args.json, f"Recovered {len(value)} expired claims")
+            return 0
 
         if args.command == "a2a":
             if args.a2a_command == "inspect-card":
