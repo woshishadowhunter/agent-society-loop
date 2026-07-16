@@ -23,6 +23,9 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
 [project.urls]
 Homepage = "https://github.com/woshishadowhunter/agent-society-loop"
 Repository = "https://github.com/woshishadowhunter/agent-society-loop"
