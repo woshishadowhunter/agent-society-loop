@@ -22,6 +22,8 @@ from .domain import (
     CandidateIdentity,
     DelegationRecord,
     DelegationStatus,
+    PolicyDecision,
+    PolicyVerdict,
     RemoteAgentRegistration,
     Task,
 )
@@ -42,6 +44,16 @@ class A2AProtocolError(A2AError):
 
 class A2AAmbiguousSubmission(A2AError):
     """The server may have accepted a message, so it must not be resent."""
+
+
+class PolicyDenied(RuntimeError):
+    """A durable policy decision forbids a new remote delegation."""
+
+    def __init__(self, decision: PolicyDecision):
+        if decision.verdict != PolicyVerdict.DENY:
+            raise ValueError("PolicyDenied requires a DENY decision")
+        self.decision = decision
+        super().__init__("remote delegation denied by operator policy")
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +360,9 @@ class RemoteExecution:
     card_sha256: str
     remote_task_id: str = ""
     duration_ms: float = 0.0
+    policy_decision_id: str = ""
+    policy_digest: str = ""
+    policy_rule_id: str = ""
 
 
 _ACTIVE_TASK_STATES = {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"}
@@ -385,6 +400,8 @@ class A2ARemoteExecutor:
         *,
         tracer: Any | None = None,
         limits: A2ALimits | None = None,
+        policy_evaluator: Any | None = None,
+        require_policy: bool = False,
         clock: Any = time.monotonic,
         sleep: Any = time.sleep,
     ) -> None:
@@ -393,6 +410,10 @@ class A2ARemoteExecutor:
         self.client = client
         self.tracer = tracer
         self.limits = limits or client.limits
+        if require_policy and policy_evaluator is None:
+            raise ValueError("required remote delegation needs a policy evaluator")
+        self.policy_evaluator = policy_evaluator
+        self.require_policy = bool(require_policy)
         self._clock = clock
         self._sleep = sleep
 
@@ -414,13 +435,39 @@ class A2ARemoteExecutor:
             self.registration.agent_id,
         )
         if existing is not None:
-            return self._resume(existing, started)
+            return self._resume(
+                existing, started, self._limits_for_delegation(existing)
+            )
 
-        payload = self._build_payload(task, context)
+        policy_decision: PolicyDecision | None = None
+        effective_limits = self.limits
+        if self.policy_evaluator is not None:
+            policy_decision = self.policy_evaluator.decide(
+                task, self.registration, number, self.limits
+            )
+            persisted = self.repository.get_policy_decision(
+                policy_decision.decision_id
+            )
+            if persisted != policy_decision:
+                raise A2AProtocolError(
+                    "A2A policy decision was not durably persisted"
+                )
+            if policy_decision.verdict == PolicyVerdict.DENY:
+                raise PolicyDenied(policy_decision)
+            effective_limits = self._limits_from_decision(policy_decision)
+        elif self.require_policy:
+            raise A2AProtocolError("A2A policy evaluator is required")
+
+        allowed_sections = (
+            policy_decision.allowed_context_sections
+            if policy_decision is not None
+            else self.registration.allowed_context_sections
+        )
+        payload = self._build_payload(task, context, allowed_sections)
         encoded = json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
-        if len(encoded) > self.limits.max_request_bytes:
+        if len(encoded) > effective_limits.max_request_bytes:
             raise A2AProtocolError("A2A delegation payload exceeds size limit")
         delegation = DelegationRecord.create(
             task.goal_id,
@@ -429,6 +476,7 @@ class A2ARemoteExecutor:
             self.registration,
             payload["message"]["messageId"],
             hashlib.sha256(encoded).hexdigest(),
+            policy_decision=policy_decision,
         )
         self.repository.save_delegation(delegation)
         delegation = delegation.advance(DelegationStatus.SUBMITTING)
@@ -454,12 +502,14 @@ class A2ARemoteExecutor:
             self.repository.save_delegation(failed)
             raise
 
-        delegation = self._apply_response(delegation, response)
+        delegation = self._apply_response(
+            delegation, response, limits=effective_limits
+        )
         if delegation.status == DelegationStatus.COMPLETED:
             return self._execution(delegation, started)
         if delegation.status != DelegationStatus.ACCEPTED:
             self._raise_terminal(delegation)
-        return self._poll(delegation, started)
+        return self._poll(delegation, started, effective_limits)
 
     def cancel(self, delegation_id: str, decided_by: str) -> DelegationRecord:
         if not decided_by.strip():
@@ -474,9 +524,15 @@ class A2ARemoteExecutor:
             DelegationStatus.INTERRUPTED,
         } or not delegation.remote_task_id:
             raise A2AProtocolError("delegation has no cancelable known remote task")
-        return self._cancel_known_task(delegation, decided_by.strip())
+        return self._cancel_known_task(
+            delegation,
+            decided_by.strip(),
+            self._limits_for_delegation(delegation),
+        )
 
-    def _resume(self, delegation: DelegationRecord, started: float) -> RemoteExecution:
+    def _resume(
+        self, delegation: DelegationRecord, started: float, limits: A2ALimits
+    ) -> RemoteExecution:
         if delegation.model_id != self.registration.model_id:
             raise A2AProtocolError("remote registration identity changed")
         if delegation.status == DelegationStatus.COMPLETED:
@@ -492,17 +548,19 @@ class A2ARemoteExecutor:
         if delegation.status == DelegationStatus.UNKNOWN:
             raise A2AProtocolError("delegation submission outcome is unknown")
         if delegation.status == DelegationStatus.ACCEPTED:
-            return self._poll(delegation, started)
+            return self._poll(delegation, started, limits)
         self._raise_terminal(delegation)
         raise AssertionError("unreachable")
 
-    def _poll(self, delegation: DelegationRecord, started: float) -> RemoteExecution:
+    def _poll(
+        self, delegation: DelegationRecord, started: float, limits: A2ALimits
+    ) -> RemoteExecution:
         while (
-            delegation.poll_count < self.limits.max_polls
-            and self._clock() - started < self.limits.total_timeout
+            delegation.poll_count < limits.max_polls
+            and self._clock() - started < limits.total_timeout
         ):
-            if self.limits.poll_interval:
-                self._sleep(self.limits.poll_interval)
+            if limits.poll_interval:
+                self._sleep(limits.poll_interval)
             delegation = delegation.advance(
                 DelegationStatus.ACCEPTED,
                 remote_task_id=delegation.remote_task_id,
@@ -523,17 +581,19 @@ class A2ARemoteExecutor:
                     )
             except A2AHTTPError:
                 continue
-            delegation = self._apply_response(delegation, response)
+            delegation = self._apply_response(
+                delegation, response, limits=limits
+            )
             if delegation.status == DelegationStatus.COMPLETED:
                 return self._execution(delegation, started)
             if delegation.status != DelegationStatus.ACCEPTED:
                 self._raise_terminal(delegation)
 
-        self._cancel_known_task(delegation, "deadline")
+        self._cancel_known_task(delegation, "deadline", limits)
         raise A2AProtocolError("A2A delegation deadline or poll budget exhausted")
 
     def _cancel_known_task(
-        self, delegation: DelegationRecord, decided_by: str
+        self, delegation: DelegationRecord, decided_by: str, limits: A2ALimits
     ) -> DelegationRecord:
         try:
             with self._span(delegation, "a2a.cancel", operation="cancel"):
@@ -543,7 +603,7 @@ class A2ARemoteExecutor:
                     tenant=self.registration.tenant,
                 )
             canceled = self._apply_response(
-                delegation, response, canceled_by=decided_by
+                delegation, response, canceled_by=decided_by, limits=limits
             )
         except A2AError:
             if delegation.status == DelegationStatus.ACCEPTED:
@@ -571,10 +631,13 @@ class A2ARemoteExecutor:
         response: dict[str, Any],
         *,
         canceled_by: str = "",
+        limits: A2ALimits,
     ) -> DelegationRecord:
         try:
             if isinstance(response.get("message"), dict):
-                content = self._normalize_parts(response["message"].get("parts"))
+                content = self._normalize_parts(
+                    response["message"].get("parts"), limits
+                )
                 updated = delegation.advance(
                     DelegationStatus.COMPLETED, result_content=content
                 )
@@ -610,7 +673,7 @@ class A2ARemoteExecutor:
                     if not isinstance(artifact_parts, list):
                         raise A2AProtocolError("A2A artifact parts are invalid")
                     parts.extend(artifact_parts)
-                content = self._normalize_parts(parts)
+                content = self._normalize_parts(parts, limits)
                 updated = delegation.advance(
                     DelegationStatus.COMPLETED,
                     remote_task_id=remote_task_id,
@@ -650,7 +713,7 @@ class A2ARemoteExecutor:
                 self.repository.save_delegation(failed)
             raise
 
-    def _normalize_parts(self, parts: Any) -> str:
+    def _normalize_parts(self, parts: Any, limits: A2ALimits) -> str:
         if not isinstance(parts, list) or not parts:
             raise A2AProtocolError("A2A result parts must not be empty")
         normalized: list[str] = []
@@ -675,16 +738,21 @@ class A2ARemoteExecutor:
         content = "\n".join(item for item in normalized if item).strip()
         if not content:
             raise A2AProtocolError("A2A result is empty")
-        if len(content.encode("utf-8")) > self.limits.max_result_bytes:
+        if len(content.encode("utf-8")) > limits.max_result_bytes:
             raise A2AProtocolError("A2A result size exceeds limit")
         return content
 
-    def _build_payload(self, task: Task, context: dict[str, Any]) -> dict[str, Any]:
+    def _build_payload(
+        self,
+        task: Task,
+        context: dict[str, Any],
+        allowed_sections: tuple[str, ...],
+    ) -> dict[str, Any]:
         skill_id = self.registration.skill_by_task_type.get(task.task_type)
         if not skill_id:
             raise A2AProtocolError("remote agent has no pinned skill for task type")
         allowed_context: dict[str, Any] = {}
-        for section in self.registration.allowed_context_sections:
+        for section in allowed_sections:
             if section == "goal":
                 allowed_context[section] = {"goal_id": task.goal_id}
             elif section == "task_context":
@@ -711,6 +779,51 @@ class A2ARemoteExecutor:
             },
         }
 
+    def _limits_for_delegation(self, delegation: DelegationRecord) -> A2ALimits:
+        if not delegation.policy_decision_id:
+            return self.limits
+        decision = self.repository.get_policy_decision(
+            delegation.policy_decision_id
+        )
+        if decision is None or (
+            decision.verdict != PolicyVerdict.ALLOW
+            or decision.goal_id != delegation.goal_id
+            or decision.task_id != delegation.task_id
+            or decision.attempt_no != delegation.attempt_no
+            or decision.agent_id != delegation.agent_id
+            or decision.model_id != delegation.model_id
+            or decision.card_sha256 != delegation.card_sha256
+            or decision.policy_digest != delegation.policy_digest
+            or decision.policy_rule_id != delegation.policy_rule_id
+        ):
+            raise A2AProtocolError(
+                "stored A2A delegation policy authority is missing or inconsistent"
+            )
+        return self._limits_from_decision(decision)
+
+    def _limits_from_decision(self, decision: PolicyDecision) -> A2ALimits:
+        if decision.verdict != PolicyVerdict.ALLOW:
+            raise ValueError("effective A2A limits require an ALLOW decision")
+        return A2ALimits(
+            request_timeout=min(
+                self.limits.request_timeout,
+                float(decision.total_timeout_seconds),
+            ),
+            total_timeout=min(
+                self.limits.total_timeout,
+                float(decision.total_timeout_seconds),
+            ),
+            max_request_bytes=min(
+                self.limits.max_request_bytes, decision.max_request_bytes
+            ),
+            max_response_bytes=self.limits.max_response_bytes,
+            max_result_bytes=min(
+                self.limits.max_result_bytes, decision.max_result_bytes
+            ),
+            max_polls=min(self.limits.max_polls, decision.max_polls),
+            poll_interval=self.limits.poll_interval,
+        )
+
     def _execution(self, delegation: DelegationRecord, started: float) -> RemoteExecution:
         return RemoteExecution(
             content=delegation.result_content,
@@ -718,6 +831,9 @@ class A2ARemoteExecutor:
             card_sha256=delegation.card_sha256,
             remote_task_id=delegation.remote_task_id,
             duration_ms=max(0.0, (self._clock() - started) * 1000.0),
+            policy_decision_id=delegation.policy_decision_id,
+            policy_digest=delegation.policy_digest,
+            policy_rule_id=delegation.policy_rule_id,
         )
 
     def _raise_terminal(self, delegation: DelegationRecord) -> None:
@@ -744,6 +860,9 @@ class A2ARemoteExecutor:
             attributes={
                 "delegation_id": delegation.delegation_id,
                 "card_sha256": delegation.card_sha256,
+                "policy_decision_id": delegation.policy_decision_id,
+                "policy_digest": delegation.policy_digest,
+                "policy_rule_id": delegation.policy_rule_id,
                 **attributes,
             },
         )
@@ -762,6 +881,19 @@ class A2ARemoteWorker:
             return self.executor.delegate(
                 task, context, attempt_no=attempt_no
             ).content
+        except PolicyDenied as error:
+            decision = error.decision
+            raise WorkerBlocked(
+                "remote delegation denied by operator policy",
+                {
+                    "card_sha256": self.executor.registration.card_sha256,
+                    "policy_decision_id": decision.decision_id,
+                    "policy_digest": decision.policy_digest,
+                    "policy_rule_id": decision.policy_rule_id,
+                    "policy_verdict": decision.verdict.value,
+                    "policy_reason": ",".join(decision.reason_codes),
+                },
+            ) from None
         except (A2AAmbiguousSubmission, A2AProtocolError):
             delegation = self.executor.repository.get_attempt_delegation(
                 task.goal_id, task.task_id, attempt_no, self.agent_id
@@ -830,5 +962,8 @@ class A2ABenchmarkRunner:
                 "delegation_id": execution.delegation_id,
                 "card_sha256": execution.card_sha256,
                 "remote_task_id": execution.remote_task_id,
+                "policy_decision_id": execution.policy_decision_id,
+                "policy_digest": execution.policy_digest,
+                "policy_rule_id": execution.policy_rule_id,
             },
         )

@@ -6,6 +6,7 @@ from agent_society_loop.a2a import (
     A2ARemoteExecutor,
     A2ARemoteWorker,
 )
+from agent_society_loop.a2a_governance import DelegationPolicyEvaluator
 from agent_society_loop.domain import (
     AgentProfile,
     EvaluationRun,
@@ -210,6 +211,51 @@ class A2AEngineTests(unittest.TestCase):
         self.assertEqual(task.status, TaskStatus.BLOCKED)
         self.assertEqual(review.score, 0)
         self.assertEqual(blocked.payload["delegation_id"], "delegation-safe")
+
+    def test_policy_denial_blocks_loop_with_decision_evidence_and_no_send(self):
+        with FakeA2AServer() as server:
+            registration = RemoteAgentRegistration.create(
+                "remote-a",
+                server.card_url,
+                "a" * 64,
+                server.interface_url,
+                {"analysis": "analyze"},
+                allow_insecure_localhost=True,
+            )
+            self.repository.save_remote_agent(registration)
+            profile = self.remote_profile(registration.model_id)
+            self.deploy_remote(profile)
+            limits = A2ALimits(poll_interval=0)
+            remote = A2ARemoteWorker(
+                A2ARemoteExecutor(
+                    self.repository,
+                    registration,
+                    A2AHTTPClient(
+                        allow_insecure_localhost=True,
+                        limits=limits,
+                    ),
+                    limits=limits,
+                    policy_evaluator=DelegationPolicyEvaluator(self.repository),
+                    require_policy=True,
+                )
+            )
+            goal = self.engine(
+                {"local-a": self.local, "remote-a": remote}
+            ).create_goal("Delegate", "Require policy", goal_id="policy-denied")
+            report = self.engine(
+                {"local-a": self.local, "remote-a": remote}
+            ).run(goal.goal_id)
+
+        decision = self.repository.list_policy_decisions(goal.goal_id)[0]
+        blocked = [
+            event
+            for event in self.repository.list_events(goal.goal_id)
+            if event.event_type == "goal.blocked"
+        ][-1]
+        self.assertEqual(report.status, GoalStatus.BLOCKED)
+        self.assertEqual(server.send_count, 0)
+        self.assertEqual(blocked.payload["policy_decision_id"], decision.decision_id)
+        self.assertEqual(blocked.payload["policy_verdict"], "DENY")
 
 
 if __name__ == "__main__":

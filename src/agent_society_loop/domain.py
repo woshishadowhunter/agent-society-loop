@@ -754,6 +754,17 @@ def _safe_id(value: str, label: str) -> str:
     return normalized
 
 
+def _record_identity(value: str, label: str) -> str:
+    normalized = str(value).strip()
+    if (
+        not normalized
+        or len(normalized) > 256
+        or any(ord(character) < 32 for character in normalized)
+    ):
+        raise ValueError(f"{label} is invalid")
+    return normalized
+
+
 def _normalized_values(values: Sequence[str], label: str) -> tuple[str, ...]:
     normalized = tuple(sorted({_safe_id(value, label) for value in values}))
     if not normalized:
@@ -1150,8 +1161,8 @@ class PolicyDecision:
         )
         return cls(
             decision_id=f"decision-{uuid4().hex[:16]}",
-            goal_id=_safe_id(goal_id, "goal ID"),
-            task_id=_safe_id(task_id, "task ID"),
+            goal_id=_record_identity(goal_id, "goal ID"),
+            task_id=_record_identity(task_id, "task ID"),
             attempt_no=attempt_no,
             agent_id=registration.agent_id,
             model_id=registration.model_id,
