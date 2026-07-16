@@ -16,9 +16,17 @@ from .a2a import (
     register_remote_agent,
 )
 from .a2a_governance import (
+    DoctorCheck,
+    DoctorReport,
     DelegationPolicyEvaluator,
+    build_doctor_report,
     parse_a2a_tck_report,
     parse_policy_document,
+)
+from .a2a_reliability import (
+    ReliabilityCheck,
+    ReliabilityReport,
+    run_reliability_campaign,
 )
 
 from .domain import (
@@ -103,8 +111,14 @@ __all__ = [
     "inspect_agent_card",
     "register_remote_agent",
     "DelegationPolicyEvaluator",
+    "DoctorCheck",
+    "DoctorReport",
+    "build_doctor_report",
     "parse_a2a_tck_report",
     "parse_policy_document",
+    "ReliabilityCheck",
+    "ReliabilityReport",
+    "run_reliability_campaign",
 ]
 
 __version__ = "0.6.0"

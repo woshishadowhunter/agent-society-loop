@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Sequence
 
@@ -17,6 +18,7 @@ from .domain import (
     PolicyVerdict,
     RemoteAgentRegistration,
     Task,
+    utc_now,
 )
 
 
@@ -392,12 +394,14 @@ class DelegationPolicyEvaluator:
         runtime_limits: Any,
         *,
         persist: bool = True,
+        reuse_existing: bool = True,
     ) -> PolicyDecision:
-        existing = self.repository.get_attempt_policy_decision(
-            task.goal_id, task.task_id, attempt_no, registration.agent_id
-        )
-        if existing is not None:
-            return existing
+        if reuse_existing:
+            existing = self.repository.get_attempt_policy_decision(
+                task.goal_id, task.task_id, attempt_no, registration.agent_id
+            )
+            if existing is not None:
+                return existing
 
         activation = self.repository.get_policy_activation(task.task_type)
         if activation is None:
@@ -577,3 +581,196 @@ def _runtime_positive_int(runtime_limits: Any, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"runtime {name} must be a positive integer")
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class DoctorCheck:
+    check_id: str
+    passed: bool
+    summary: str
+    required: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "check_id": self.check_id,
+            "passed": self.passed,
+            "summary": self.summary,
+            "required": self.required,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DoctorReport:
+    agent_id: str
+    task_type: str
+    checks: tuple[DoctorCheck, ...]
+    created_at: str = field(default_factory=utc_now)
+
+    @property
+    def ready(self) -> bool:
+        return all(check.passed for check in self.checks if check.required)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "task_type": self.task_type,
+            "ready": self.ready,
+            "checks": [check.to_dict() for check in self.checks],
+            "created_at": self.created_at,
+        }
+
+
+def build_doctor_report(
+    repository: Any,
+    registration: RemoteAgentRegistration,
+    inspection: Any,
+    task_type: str,
+    runtime_limits: Any,
+    *,
+    now: Callable[[], datetime] | None = None,
+) -> DoctorReport:
+    """Build a read-only readiness report from an already fetched card."""
+
+    card = inspection.card if isinstance(inspection.card, dict) else {}
+    digest_matches = (
+        inspection.card_url == registration.card_url
+        and inspection.sha256 == registration.card_sha256
+    )
+    interfaces = card.get("supportedInterfaces")
+    interface_matches = any(
+        isinstance(item, dict)
+        and item.get("url") == registration.interface_url
+        and item.get("protocolBinding") == "HTTP+JSON"
+        and item.get("protocolVersion") == "1.0"
+        and str(item.get("tenant", "")) == registration.tenant
+        for item in interfaces or []
+    ) if isinstance(interfaces, list) else False
+    skills = card.get("skills")
+    declared_skills = {
+        item.get("id")
+        for item in skills or []
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    skill_matches = set(registration.skill_by_task_type.values()).issubset(
+        declared_skills
+    )
+
+    profile = repository.get_agent(registration.agent_id)
+    profile_matches = profile is not None and (
+        profile.model_id == registration.model_id
+        and profile.execution_kind == "a2a"
+        and task_type in profile.task_types
+    )
+    deployment = repository.get_deployment(task_type)
+    deployment_matches = deployment is not None and (
+        deployment.champion_agent_id == registration.agent_id
+        and deployment.champion_model_id == registration.model_id
+    )
+    activation = repository.get_policy_activation(task_type)
+    policy = (
+        repository.get_policy(activation.policy_digest)
+        if activation is not None
+        else None
+    )
+    active_policy = policy is not None and any(
+        task_type in rule.task_types for rule in policy.rules
+    )
+
+    simulation: PolicyDecision | None = None
+    try:
+        simulation = DelegationPolicyEvaluator(repository, now=now).decide(
+            Task.create(
+                "doctor-readiness",
+                f"doctor:{task_type}:{registration.agent_id}",
+                task_type,
+                "Read-only remote readiness simulation",
+                max_attempts=1,
+            ),
+            registration,
+            1,
+            runtime_limits,
+            persist=False,
+            reuse_existing=False,
+        )
+        simulation_passed = simulation.verdict == PolicyVerdict.ALLOW
+    except (TypeError, ValueError):
+        simulation_passed = False
+
+    now_value = (now or (lambda: datetime.now(timezone.utc)))()
+    attestation_passed = False
+    if policy is not None:
+        matching_rules = [
+            rule
+            for rule in policy.rules
+            if task_type in rule.task_types
+            and registration.agent_id in rule.agent_ids
+            and registration.card_sha256 in rule.card_sha256s
+        ]
+        if len(matching_rules) == 1:
+            rule = matching_rules[0]
+            attestations = repository.list_attestations(
+                registration.agent_id, registration.card_sha256
+            )
+            by_kind = {
+                kind: [item for item in attestations if item.kind == kind]
+                for kind in rule.required_attestation_kinds
+            }
+            latest = [
+                max(items, key=lambda item: datetime.fromisoformat(item.observed_at))
+                for items in by_kind.values()
+                if items
+            ]
+            attestation_passed = (
+                len(latest) == len(rule.required_attestation_kinds)
+                and all(item.passed for item in latest)
+                and all(
+                    datetime.fromisoformat(item.observed_at) <= now_value
+                    and now_value - datetime.fromisoformat(item.observed_at)
+                    <= timedelta(hours=rule.max_attestation_age_hours)
+                    for item in latest
+                )
+            )
+
+    checks = (
+        DoctorCheck(
+            "card_digest",
+            digest_matches,
+            "card digest matches operator pin" if digest_matches else "card digest drifted",
+        ),
+        DoctorCheck(
+            "card_interface",
+            interface_matches,
+            "HTTP+JSON 1.0 interface matches" if interface_matches else "interface identity drifted",
+        ),
+        DoctorCheck(
+            "card_skills",
+            skill_matches,
+            "registered skills are declared" if skill_matches else "registered skills drifted",
+        ),
+        DoctorCheck(
+            "agent_profile",
+            profile_matches,
+            "remote profile matches card identity" if profile_matches else "remote profile is missing or inconsistent",
+        ),
+        DoctorCheck(
+            "active_deployment",
+            deployment_matches,
+            "exact remote identity is deployed" if deployment_matches else "exact remote identity is not deployed",
+        ),
+        DoctorCheck(
+            "active_policy",
+            active_policy,
+            "task type has an active pinned policy" if active_policy else "task type has no usable active policy",
+        ),
+        DoctorCheck(
+            "policy_simulation",
+            simulation_passed,
+            "policy simulation allows delegation" if simulation_passed else "policy simulation denies delegation",
+        ),
+        DoctorCheck(
+            "tck_attestation",
+            attestation_passed,
+            "required conformance evidence is fresh" if attestation_passed else "required conformance evidence is not usable",
+        ),
+    )
+    return DoctorReport(registration.agent_id, task_type, checks)
