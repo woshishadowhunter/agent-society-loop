@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Sequence
 
 from .domain import (
     AgentProfile,
@@ -586,6 +586,231 @@ class SQLiteRepository:
         query += " ORDER BY goal_id, task_id, fencing_token"
         rows = self.connection.execute(query, parameters).fetchall()
         return [self._claim_from_payload(row["payload"]) for row in rows]
+
+    def reap_expired_claims(self, *, now: str) -> list[TaskClaim]:
+        expired_claims: list[TaskClaim] = []
+        unsafe_remote_states = {
+            DelegationStatus.SUBMITTING,
+            DelegationStatus.UNKNOWN,
+            DelegationStatus.INTERRUPTED,
+        }
+        with self._immediate_transaction():
+            rows = self.connection.execute(
+                "SELECT payload FROM task_claims WHERE status='active' "
+                "ORDER BY goal_id, task_id, fencing_token"
+            ).fetchall()
+            for row in rows:
+                claim = self._claim_from_payload(row["payload"])
+                if not claim.is_expired(now):
+                    continue
+
+                delegation_row = self.connection.execute(
+                    "SELECT payload FROM delegations WHERE goal_id=? AND task_id=? "
+                    "ORDER BY rowid DESC LIMIT 1",
+                    (claim.goal_id, claim.task_id),
+                ).fetchone()
+                delegation = (
+                    _delegation_from_payload(delegation_row["payload"])
+                    if delegation_row is not None
+                    else None
+                )
+                unsafe = (
+                    delegation is not None
+                    and delegation.status in unsafe_remote_states
+                )
+                reason = (
+                    f"unsafe remote delegation state: {delegation.status.value}"
+                    if unsafe and delegation is not None
+                    else "lease expired"
+                )
+                expired = claim.finish(
+                    ClaimStatus.EXPIRED, now=now, reason=reason
+                )
+                self.connection.execute(
+                    "UPDATE task_claims SET status=?, payload=? "
+                    "WHERE claim_id=? AND status='active'",
+                    (expired.status.value, _dump(asdict(expired)), claim.claim_id),
+                )
+
+                task_row = self.connection.execute(
+                    "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                    (claim.goal_id, claim.task_id),
+                ).fetchone()
+                if task_row is not None:
+                    task = self._task_from_payload(task_row["payload"])
+                    if task.status == TaskStatus.RUNNING:
+                        recovered = replace(
+                            task,
+                            status=(
+                                TaskStatus.BLOCKED if unsafe else TaskStatus.PENDING
+                            ),
+                            assigned_agent_id=None,
+                        )
+                        self.connection.execute(
+                            "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                            (_dump(asdict(recovered)), task.goal_id, task.task_id),
+                        )
+
+                event = Event.create(
+                    claim.goal_id,
+                    "task.claim_expired",
+                    {
+                        "claim_id": claim.claim_id,
+                        "task_id": claim.task_id,
+                        "worker_id": claim.worker_id,
+                        "fencing_token": claim.fencing_token,
+                        "recovery": "blocked" if unsafe else "pending",
+                        "reason": reason,
+                    },
+                )
+                self.connection.execute(
+                    "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                    (event.event_id, event.goal_id, _dump(asdict(event))),
+                )
+                expired_claims.append(expired)
+        return expired_claims
+
+    def commit_claim_outcome(
+        self,
+        claim: TaskClaim,
+        task: Task,
+        artifact: Artifact | None,
+        attempt: Attempt,
+        review: Review,
+        performance: PerformanceRecord,
+        events: Sequence[Event],
+        *,
+        now: str,
+    ) -> TaskClaim:
+        with self._immediate_transaction():
+            self._require_worker_session_locked(
+                claim.worker_id, claim.session_id, now
+            )
+            current = self._require_claim_locked(
+                claim.claim_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                now,
+            )
+            if (
+                task.goal_id != current.goal_id
+                or task.task_id != current.task_id
+                or task.status
+                not in {
+                    TaskStatus.PENDING,
+                    TaskStatus.SUCCEEDED,
+                    TaskStatus.FAILED,
+                    TaskStatus.BLOCKED,
+                }
+                or attempt.goal_id != current.goal_id
+                or attempt.task_id != current.task_id
+                or attempt.agent_id != current.agent_id
+                or review.goal_id != current.goal_id
+                or review.task_id != current.task_id
+                or review.review_id != attempt.review_id
+                or review.attempt_no != attempt.attempt_no
+                or performance.agent_id != current.agent_id
+                or performance.task_type != task.task_type
+            ):
+                raise ValueError("outcome identity does not match active claim")
+            if artifact is None:
+                if attempt.artifact_id is not None or task.artifact_id is not None:
+                    raise ValueError("outcome artifact identity is inconsistent")
+            elif (
+                artifact.goal_id != current.goal_id
+                or artifact.task_id != current.task_id
+                or artifact.agent_id != current.agent_id
+                or attempt.artifact_id != artifact.artifact_id
+                or (
+                    task.status == TaskStatus.SUCCEEDED
+                    and task.artifact_id != artifact.artifact_id
+                )
+                or (
+                    task.status != TaskStatus.SUCCEEDED
+                    and task.artifact_id not in {None, artifact.artifact_id}
+                )
+            ):
+                raise ValueError("outcome artifact identity does not match active claim")
+            if any(event.goal_id != current.goal_id for event in events):
+                raise ValueError("outcome event belongs to another goal")
+
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                (current.goal_id, current.task_id),
+            ).fetchone()
+            if task_row is None:
+                raise StaleClaim("claimed task no longer exists")
+            durable_task = self._task_from_payload(task_row["payload"])
+            if (
+                durable_task.status != TaskStatus.RUNNING
+                or durable_task.assigned_agent_id != current.agent_id
+            ):
+                raise StaleClaim("claim identity no longer owns task")
+
+            if artifact is not None:
+                self.connection.execute(
+                    "INSERT INTO artifacts(artifact_id, goal_id, task_id, payload) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        artifact.artifact_id,
+                        artifact.goal_id,
+                        artifact.task_id,
+                        _dump(asdict(artifact)),
+                    ),
+                )
+            self.connection.execute(
+                "INSERT INTO attempts(attempt_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    attempt.attempt_id,
+                    attempt.goal_id,
+                    attempt.task_id,
+                    attempt.attempt_no,
+                    _dump(asdict(attempt)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    review.review_id,
+                    review.goal_id,
+                    review.task_id,
+                    review.attempt_no,
+                    _dump(asdict(review)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO performance(agent_id, task_type, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(agent_id, task_type) DO UPDATE SET payload=excluded.payload",
+                (
+                    performance.agent_id,
+                    performance.task_type,
+                    _dump(asdict(performance)),
+                ),
+            )
+            for event in events:
+                self.connection.execute(
+                    "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                    (event.event_id, event.goal_id, _dump(asdict(event))),
+                )
+            self.connection.execute(
+                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                (_dump(asdict(task)), task.goal_id, task.task_id),
+            )
+            committed = current.finish(ClaimStatus.COMMITTED, now=now)
+            self.connection.execute(
+                "UPDATE task_claims SET status=?, payload=? "
+                "WHERE claim_id=? AND status='active' AND fencing_token=?",
+                (
+                    committed.status.value,
+                    _dump(asdict(committed)),
+                    committed.claim_id,
+                    committed.fencing_token,
+                ),
+            )
+        return committed
 
     def save_goal(self, goal: Goal) -> None:
         self.connection.execute(

@@ -1,9 +1,23 @@
 import tempfile
 import unittest
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
-from agent_society_loop.domain import Goal, GoalStatus, Task, TaskStatus
+from agent_society_loop.domain import (
+    Artifact,
+    Attempt,
+    DelegationRecord,
+    DelegationStatus,
+    Event,
+    Goal,
+    GoalStatus,
+    PerformanceRecord,
+    Review,
+    Task,
+    TaskStatus,
+    Verdict,
+)
 from agent_society_loop.scheduler import (
     ClaimStatus,
     TaskClaim,
@@ -241,6 +255,205 @@ class SchedulerClaimTests(unittest.TestCase):
                 claim.claim_id, "worker-a", "session-a", claim.fencing_token,
                 now="2026-07-16T00:00:10+00:00", lease_seconds=10,
             )
+
+
+class SchedulerOutcomeTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "outcomes.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+        goal = replace(
+            Goal.create("Outcome", "Fence outcomes", goal_id="g"),
+            status=GoalStatus.RUNNING,
+        )
+        self.first.save_goal(goal)
+        self.first.save_task(Task.create("g", "t", "analysis", "Analyze"))
+        for worker_id, session_id in (
+            ("worker-a", "session-a"),
+            ("worker-b", "session-b"),
+        ):
+            self.first.register_worker(
+                WorkerSession.create(
+                    worker_id, session_id, ("analysis",), now=AT, ttl_seconds=60
+                )
+            )
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
+
+    def _make_outcome(self, claim, agent_id):
+        artifact = Artifact.create("g", "t", agent_id, "accepted artifact")
+        review = Review.create("g", "t", 1, Verdict.PASS, 92, [], "Accepted")
+        attempt = Attempt.create(
+            "g", "t", agent_id, 1, 12.0, artifact.artifact_id, review.review_id
+        )
+        performance = PerformanceRecord(agent_id, "analysis", 1, 1, 92.0, 12.0)
+        event = Event.create("g", "task.attempt_completed", {"task_id": "t"})
+        task = replace(
+            self.first.list_tasks("g")[0],
+            status=TaskStatus.SUCCEEDED,
+            artifact_id=artifact.artifact_id,
+        )
+        return task, artifact, attempt, review, performance, event
+
+    def test_expired_worker_cannot_commit_any_partial_outcome(self):
+        old = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        expired = self.first.reap_expired_claims(
+            now="2026-07-16T00:00:10+00:00"
+        )
+        self.assertEqual([item.claim_id for item in expired], [old.claim_id])
+        replacement = self.second.claim_task(
+            "g", "t", "worker-b", "session-b", "agent-b",
+            now="2026-07-16T00:00:10+00:00", lease_seconds=10,
+        )
+        self.assertGreater(replacement.fencing_token, old.fencing_token)
+        outcome = self._make_outcome(old, "agent-a")
+
+        with self.assertRaisesRegex(StaleClaim, "identity"):
+            self.first.commit_claim_outcome(
+                old, *outcome[:-1], [outcome[-1]],
+                now="2026-07-16T00:00:11+00:00",
+            )
+
+        self.assertEqual(self.first.list_artifacts("g", "t"), [])
+        self.assertEqual(self.first.list_attempts("g", "t"), [])
+        self.assertEqual(self.first.list_reviews("g", "t"), [])
+        self.assertIsNone(self.first.get_performance("agent-a", "analysis"))
+        self.assertEqual(
+            [event.event_type for event in self.first.list_events("g")],
+            ["task.claim_expired"],
+        )
+
+    def test_current_claim_commits_complete_outcome_atomically_and_survives_reopen(self):
+        claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        outcome = self._make_outcome(claim, "agent-a")
+
+        committed = self.second.commit_claim_outcome(
+            claim, *outcome[:-1], [outcome[-1]], now=PLUS_5
+        )
+
+        self.assertEqual(committed.status, ClaimStatus.COMMITTED)
+        self.assertEqual(self.first.list_tasks("g")[0].status, TaskStatus.SUCCEEDED)
+        self.assertEqual(len(self.first.list_artifacts("g", "t")), 1)
+        self.assertEqual(len(self.first.list_attempts("g", "t")), 1)
+        self.assertEqual(len(self.first.list_reviews("g", "t")), 1)
+        self.assertEqual(
+            self.first.get_performance("agent-a", "analysis").passes, 1
+        )
+
+        self.second.close()
+        self.second = SQLiteRepository(self.path)
+        self.assertEqual(
+            self.second.get_claim(claim.claim_id).status, ClaimStatus.COMMITTED
+        )
+
+    def test_failed_review_keeps_audit_artifact_but_returns_task_to_pending(self):
+        claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        artifact = Artifact.create("g", "t", "agent-a", "draft artifact")
+        review = Review.create("g", "t", 1, Verdict.FAIL, 35, [], "Revise")
+        attempt = Attempt.create(
+            "g", "t", "agent-a", 1, 9.0, artifact.artifact_id, review.review_id
+        )
+        performance = PerformanceRecord("agent-a", "analysis", 1, 0, 35.0, 9.0)
+        pending = replace(
+            self.first.list_tasks("g")[0],
+            status=TaskStatus.PENDING,
+            artifact_id=None,
+            assigned_agent_id=None,
+        )
+
+        committed = self.first.commit_claim_outcome(
+            claim,
+            pending,
+            artifact,
+            attempt,
+            review,
+            performance,
+            [Event.create("g", "task.review_failed", {"task_id": "t"})],
+            now=PLUS_5,
+        )
+
+        self.assertEqual(committed.status, ClaimStatus.COMMITTED)
+        self.assertEqual(self.first.list_tasks("g")[0].status, TaskStatus.PENDING)
+        self.assertEqual(len(self.first.list_artifacts("g", "t")), 1)
+
+    def test_outcome_sql_failure_rolls_back_claim_and_every_new_record(self):
+        claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        outcome = self._make_outcome(claim, "agent-a")
+        self.first.append_event(outcome[-1])
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.first.commit_claim_outcome(
+                claim, *outcome[:-1], [outcome[-1]], now=PLUS_5
+            )
+
+        self.assertEqual(
+            self.first.get_claim(claim.claim_id).status, ClaimStatus.ACTIVE
+        )
+        self.assertEqual(self.first.list_tasks("g")[0].status, TaskStatus.RUNNING)
+        self.assertEqual(self.first.list_artifacts("g", "t"), [])
+        self.assertEqual(self.first.list_attempts("g", "t"), [])
+        self.assertEqual(self.first.list_reviews("g", "t"), [])
+
+    def test_risky_remote_expiry_blocks_but_accepted_remote_work_is_resumable(self):
+        risky = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        self.first.save_delegation(
+            DelegationRecord(
+                "delegation-risky", "g", "t", 1, "agent-a", "model-a",
+                "a" * 64, "message-risky", "b" * 64,
+                status=DelegationStatus.UNKNOWN, error_category="send_timeout",
+            )
+        )
+
+        self.first.reap_expired_claims(now="2026-07-16T00:00:10+00:00")
+
+        self.assertEqual(
+            self.first.list_tasks("g")[0].status, TaskStatus.BLOCKED
+        )
+        self.assertEqual(
+            self.first.get_claim(risky.claim_id).reason,
+            "unsafe remote delegation state: unknown",
+        )
+
+        accepted_task = Task.create("g", "accepted", "analysis", "Resume polling")
+        self.first.save_task(accepted_task)
+        accepted = self.first.claim_task(
+            "g", "accepted", "worker-b", "session-b", "agent-b",
+            now=AT, lease_seconds=10,
+        )
+        self.first.save_delegation(
+            DelegationRecord(
+                "delegation-accepted", "g", "accepted", 1, "agent-b", "model-b",
+                "c" * 64, "message-accepted", "d" * 64,
+                status=DelegationStatus.ACCEPTED, remote_task_id="remote-1",
+            )
+        )
+
+        self.first.reap_expired_claims(now="2026-07-16T00:00:10+00:00")
+
+        tasks = {task.task_id: task for task in self.first.list_tasks("g")}
+        self.assertEqual(tasks["accepted"].status, TaskStatus.PENDING)
+        self.assertEqual(
+            self.first.get_claim(accepted.claim_id).status, ClaimStatus.EXPIRED
+        )
 
 
 if __name__ == "__main__":
