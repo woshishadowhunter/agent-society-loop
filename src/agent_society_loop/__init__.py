@@ -14,6 +14,11 @@ from .a2a import (
     inspect_agent_card,
     register_remote_agent,
 )
+from .a2a_governance import (
+    DelegationPolicyEvaluator,
+    parse_a2a_tck_report,
+    parse_policy_document,
+)
 
 from .domain import (
     ApprovalRequest,
@@ -95,6 +100,9 @@ __all__ = [
     "RemoteExecution",
     "inspect_agent_card",
     "register_remote_agent",
+    "DelegationPolicyEvaluator",
+    "parse_a2a_tck_report",
+    "parse_policy_document",
 ]
 
 __version__ = "0.6.0"
