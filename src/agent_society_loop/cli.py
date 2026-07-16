@@ -1,0 +1,273 @@
+"""Command-line interface for running and inspecting agent societies."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import asdict, is_dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Sequence
+
+from .deterministic import CriteriaReviewer, build_demo_engine
+from .domain import AgentProfile, Goal, RunBudget, Task
+from .engine import LoopEngine
+from .memory import MemoryManager
+from .selection import PerformanceWeightedSelector
+from .storage import SQLiteRepository
+
+
+def _jsonable(value: Any) -> Any:
+    if isinstance(value, Enum):
+        return value.value
+    if is_dataclass(value):
+        return _jsonable(asdict(value))
+    if isinstance(value, dict):
+        return {key: _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
+
+
+def _emit(value: Any, as_json: bool, human: str | None = None) -> None:
+    if as_json:
+        print(json.dumps(_jsonable(value), ensure_ascii=False, indent=2, sort_keys=True))
+    else:
+        print(human if human is not None else value)
+
+
+class SpecPlanner:
+    def __init__(self, task_specs: Sequence[dict[str, Any]]):
+        self.task_specs = list(task_specs)
+
+    def plan(self, goal: Goal, context: dict[str, Any]) -> Sequence[Task]:
+        tasks = []
+        for index, spec in enumerate(self.task_specs, start=1):
+            tasks.append(
+                Task.create(
+                    goal.goal_id,
+                    str(spec["task_id"]),
+                    str(spec["task_type"]),
+                    str(spec["description"]),
+                    assigned_role=str(spec.get("assigned_role", "worker")),
+                    acceptance_criteria=dict(spec.get("acceptance_criteria", {})),
+                    dependencies=tuple(spec.get("dependencies", ())),
+                    context={
+                        "output": str(spec.get("output", "")),
+                        "repair_output": str(spec.get("repair_output", "")),
+                    },
+                    max_attempts=int(spec.get("max_attempts", 3)),
+                    position=int(spec.get("position", index)),
+                )
+            )
+        return tasks
+
+
+class SpecWorker:
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+
+    def execute(self, task: Task, context: dict[str, Any]) -> str:
+        use_repair = bool(context.get("review_feedback"))
+        key = "repair_output" if use_repair else "output"
+        output = task.context.get(key) or task.context.get("output")
+        if not output:
+            raise ValueError(f"task {task.task_id} has no {key}")
+        return str(output)
+
+
+def _load_spec(path: str) -> dict[str, Any]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid goal spec: {error}") from error
+    required = ("title", "description", "tasks")
+    if not isinstance(data, dict) or any(not data.get(field) for field in required):
+        raise ValueError("invalid goal spec: title, description, and tasks are required")
+    if not isinstance(data["tasks"], list) or not data["tasks"]:
+        raise ValueError("invalid goal spec: tasks must be a non-empty list")
+    task_required = ("task_id", "task_type", "description", "output")
+    for index, task in enumerate(data["tasks"]):
+        if not isinstance(task, dict) or any(field not in task for field in task_required):
+            raise ValueError(
+                f"invalid goal spec: task {index + 1} requires "
+                + ", ".join(task_required)
+            )
+    return data
+
+
+def _agent_id(task_type: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", task_type.casefold()).strip("-")
+    return f"spec-{slug or 'worker'}"
+
+
+def _build_spec_engine(repository: SQLiteRepository, spec: dict[str, Any]) -> LoopEngine:
+    workers = {}
+    task_types: dict[str, set[str]] = {}
+    for task in spec["tasks"]:
+        agent_id = _agent_id(str(task["task_type"]))
+        task_types.setdefault(agent_id, set()).add(str(task["task_type"]))
+        workers.setdefault(agent_id, SpecWorker(agent_id))
+    for agent_id, supported in task_types.items():
+        repository.save_agent(
+            AgentProfile(agent_id, "worker", "static-spec-v1", tuple(sorted(supported)))
+        )
+    memory = MemoryManager(repository)
+    return LoopEngine(
+        planner=SpecPlanner(spec["tasks"]),
+        workers=workers,
+        reviewer=CriteriaReviewer(),
+        repository=repository,
+        memory=memory,
+        selector=PerformanceWeightedSelector(),
+        budget=RunBudget(max_actions=int(spec.get("max_actions", 100))),
+    )
+
+
+def _status(repository: SQLiteRepository, goal_id: str) -> dict[str, Any]:
+    goal = repository.get_goal(goal_id)
+    if goal is None:
+        raise KeyError(f"goal not found: {goal_id}")
+    return {
+        "goal": goal,
+        "tasks": repository.list_tasks(goal_id),
+        "reviews": repository.list_reviews(goal_id),
+        "artifacts": repository.list_artifacts(goal_id),
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="agent-society",
+        description="Run auditable goal-driven societies of specialized agents.",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    demo = commands.add_parser("demo", help="run the offline quantum mug scenario")
+    demo.add_argument("--db", default="agent-society.db")
+    demo.add_argument("--goal-id", default="quantum-mug-demo")
+    demo.add_argument("--json", action="store_true")
+
+    run = commands.add_parser("run", help="run a JSON goal specification")
+    run.add_argument("spec")
+    run.add_argument("--db", default="agent-society.db")
+    run.add_argument("--json", action="store_true")
+
+    status = commands.add_parser("status", help="inspect goal state and artifacts")
+    status.add_argument("goal_id")
+    status.add_argument("--db", default="agent-society.db")
+    status.add_argument("--json", action="store_true")
+
+    events = commands.add_parser("events", help="inspect an ordered audit trail")
+    events.add_argument("goal_id")
+    events.add_argument("--db", default="agent-society.db")
+    events.add_argument("--json", action="store_true")
+
+    agents = commands.add_parser("agents", help="inspect agents and social memory")
+    agents.add_argument("--db", default="agent-society.db")
+    agents.add_argument("--json", action="store_true")
+
+    knowledge = commands.add_parser("knowledge", help="manage long-term knowledge")
+    knowledge_commands = knowledge.add_subparsers(dest="knowledge_command", required=True)
+    add = knowledge_commands.add_parser("add", help="add a knowledge item")
+    add.add_argument("title")
+    add.add_argument("content")
+    add.add_argument("--tag", action="append", default=[])
+    add.add_argument("--db", default="agent-society.db")
+    add.add_argument("--json", action="store_true")
+    search = knowledge_commands.add_parser("search", help="search knowledge")
+    search.add_argument("query")
+    search.add_argument("--tag", action="append", default=[])
+    search.add_argument("--limit", type=int, default=5)
+    search.add_argument("--db", default="agent-society.db")
+    search.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    repository = SQLiteRepository(args.db)
+    try:
+        if args.command == "demo":
+            engine = build_demo_engine(repository)
+            goal = repository.get_goal(args.goal_id)
+            if goal is None:
+                goal = engine.create_goal(
+                    "Quantum Coffee Mug Launch",
+                    "Create market, visual, copy, and integrated launch materials",
+                    goal_id=args.goal_id,
+                )
+            report = engine.resume(goal.goal_id)
+            _emit(
+                report,
+                args.json,
+                f"Goal {report.goal_id}: {report.status.value} "
+                f"({report.tasks_succeeded}/{report.tasks_total} tasks, {report.retries} retries)",
+            )
+            return 0 if report.status.value == "succeeded" else 1
+
+        if args.command == "run":
+            spec = _load_spec(args.spec)
+            engine = _build_spec_engine(repository, spec)
+            goal_id = str(spec.get("goal_id") or "") or None
+            if goal_id and repository.get_goal(goal_id) is not None:
+                raise ValueError(f"goal already exists: {goal_id}")
+            goal = engine.create_goal(
+                str(spec["title"]), str(spec["description"]), goal_id=goal_id
+            )
+            report = engine.run(goal.goal_id)
+            _emit(report, args.json, f"Goal {report.goal_id}: {report.status.value}")
+            return 0 if report.status.value == "succeeded" else 1
+
+        if args.command == "status":
+            value = _status(repository, args.goal_id)
+            _emit(value, args.json, f"Goal {args.goal_id}: {value['goal'].status.value}")
+            return 0
+
+        if args.command == "events":
+            if repository.get_goal(args.goal_id) is None:
+                raise KeyError(f"goal not found: {args.goal_id}")
+            value = repository.list_events(args.goal_id)
+            human = "\n".join(
+                f"{event.sequence:04d} {event.event_type}" for event in value
+            )
+            _emit(value, args.json, human)
+            return 0
+
+        if args.command == "agents":
+            performance = repository.list_performance()
+            value = [
+                {
+                    **_jsonable(agent),
+                    "performance": [
+                        _jsonable(record)
+                        for record in performance
+                        if record.agent_id == agent.agent_id
+                    ],
+                }
+                for agent in repository.list_agents()
+            ]
+            _emit(value, args.json, f"{len(value)} registered agents")
+            return 0
+
+        memory = MemoryManager(repository)
+        if args.knowledge_command == "add":
+            knowledge_id = memory.add_knowledge(args.title, args.content, args.tag)
+            _emit(
+                {"knowledge_id": knowledge_id},
+                args.json,
+                f"Added knowledge {knowledge_id}",
+            )
+            return 0
+        results = memory.search_knowledge(args.query, args.tag, limit=args.limit)
+        _emit(results, args.json, f"{len(results)} matching knowledge items")
+        return 0
+    except (KeyError, ValueError, OSError) as error:
+        message = error.args[0] if isinstance(error, KeyError) else str(error)
+        print(f"error: {message}", file=sys.stderr)
+        return 2
+    finally:
+        repository.close()
+

@@ -1,0 +1,30 @@
+{
+  "goal_id": "evidence-brief-demo",
+  "title": "Create an evidence brief",
+  "description": "Produce a short, reviewed evidence brief from two dependent tasks.",
+  "max_actions": 10,
+  "tasks": [
+    {
+      "task_id": "research",
+      "task_type": "research",
+      "description": "Collect evidence",
+      "acceptance_criteria": {
+        "required_terms": ["source"],
+        "min_length": 40
+      },
+      "output": "A note without support.",
+      "repair_output": "Source: Community survey. The result is supported by direct evidence."
+    },
+    {
+      "task_id": "brief",
+      "task_type": "writing",
+      "description": "Write the evidence brief",
+      "dependencies": ["research"],
+      "acceptance_criteria": {
+        "required_terms": ["evidence", "recommendation"]
+      },
+      "output": "Evidence supports the recommendation to run a measured pilot."
+    }
+  ]
+}
+
