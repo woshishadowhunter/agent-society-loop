@@ -9,9 +9,13 @@ from pathlib import Path
 from agent_society_loop.cli import build_parser, main
 from agent_society_loop.domain import (
     AgentProfile,
+    ConformanceAttestation,
+    DelegationPolicy,
     DelegationRecord,
+    DelegationRule,
     DelegationStatus,
     EvaluationRun,
+    PolicyActivation,
 )
 from agent_society_loop.storage import SQLiteRepository
 from tests.a2a_fake_server import FakeA2AServer
@@ -181,6 +185,41 @@ class A2ACLITests(unittest.TestCase):
             )
             repository.save_evaluation_run(run)
             repository.promote_evaluation(run.run_id, "operator")
+            rule = DelegationRule.create(
+                "analysis-v1",
+                ["analysis"],
+                ["remote-a"],
+                [digest],
+                allowed_context_sections=["review_feedback"],
+                max_request_bytes=65536,
+                max_result_bytes=131072,
+                max_polls=12,
+                total_timeout_seconds=45,
+                required_attestation_kinds=["a2a-tck"],
+                max_attestation_age_hours=168,
+            )
+            policy = DelegationPolicy.create("production", 1, [rule])
+            repository.save_policy(policy)
+            repository.activate_policy(
+                PolicyActivation.create("analysis", policy, "operator")
+            )
+            repository.save_attestation(
+                ConformanceAttestation.create(
+                    agent_id="remote-a",
+                    card_sha256=digest,
+                    kind="a2a-tck",
+                    report_sha256="b" * 64,
+                    source_revision="c" * 40,
+                    tool_version="1.0.0",
+                    spec_version="1.0",
+                    observed_at="2026-07-16T10:00:00+00:00",
+                    passed=True,
+                    metrics={
+                        "must_compatibility": 100.0,
+                        "http_json_failed": 0,
+                    },
+                )
+            )
             repository.close()
 
             def write_spec(goal_id):
