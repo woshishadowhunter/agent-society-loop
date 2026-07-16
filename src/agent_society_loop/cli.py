@@ -20,6 +20,13 @@ from .a2a import (
     A2ARemoteWorker,
     register_remote_agent,
 )
+from .a2a_governance import (
+    DelegationPolicyEvaluator,
+    build_doctor_report,
+    parse_a2a_tck_report,
+    parse_policy_document,
+)
+from .a2a_reliability import run_reliability_campaign
 from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import (
     AgentProfile,
@@ -28,6 +35,8 @@ from .domain import (
     CandidateIdentity,
     CaseEvaluation,
     Goal,
+    PolicyActivation,
+    PolicyVerdict,
     RunBudget,
     Task,
 )
@@ -170,6 +179,8 @@ def _build_spec_engine(
                     client,
                     tracer=TraceRecorder(repository),
                     limits=limits,
+                    policy_evaluator=DelegationPolicyEvaluator(repository),
+                    require_policy=True,
                 )
             )
     memory = MemoryManager(repository)
@@ -191,6 +202,18 @@ def _registration_token(auth_env: str) -> str:
     if not token:
         raise ValueError(f"remote authentication environment variable is missing: {auth_env}")
     return token
+
+
+def _read_bounded(path: str, max_bytes: int, label: str) -> bytes:
+    source = Path(path)
+    try:
+        with source.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+    except OSError as error:
+        raise ValueError(f"cannot read {label}: {error}") from error
+    if not raw or len(raw) > max_bytes:
+        raise ValueError(f"{label} size is invalid")
+    return raw
 
 
 def _parse_skill_declarations(values: Sequence[str]) -> dict[str, str]:
@@ -486,6 +509,76 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("--db", default="agent-society.db")
     cancel.add_argument("--json", action="store_true")
 
+    policy = a2a_commands.add_parser(
+        "policy", help="validate and activate remote delegation policy"
+    )
+    policy_commands = policy.add_subparsers(dest="policy_command", required=True)
+    for name in ("validate", "import"):
+        policy_file = policy_commands.add_parser(name, help=f"{name} a policy file")
+        policy_file.add_argument("path")
+        policy_file.add_argument("--db", default="agent-society.db")
+        policy_file.add_argument("--json", action="store_true")
+    policy_list = policy_commands.add_parser("list", help="list policies and activations")
+    policy_list.add_argument("--db", default="agent-society.db")
+    policy_list.add_argument("--json", action="store_true")
+    policy_activate = policy_commands.add_parser(
+        "activate", help="activate one exact policy digest for a task type"
+    )
+    policy_activate.add_argument("task_type")
+    policy_activate.add_argument("policy_digest")
+    policy_activate.add_argument("--by", required=True)
+    policy_activate.add_argument("--db", default="agent-society.db")
+    policy_activate.add_argument("--json", action="store_true")
+    policy_simulate = policy_commands.add_parser(
+        "simulate", help="simulate current policy without persisting a decision"
+    )
+    policy_simulate.add_argument("agent_id")
+    policy_simulate.add_argument("task_type")
+    policy_simulate.add_argument("--db", default="agent-society.db")
+    policy_simulate.add_argument("--json", action="store_true")
+
+    attestation = a2a_commands.add_parser(
+        "attestation", help="import official A2A TCK compatibility evidence"
+    )
+    attestation_commands = attestation.add_subparsers(
+        dest="attestation_command", required=True
+    )
+    attestation_import = attestation_commands.add_parser(
+        "import", help="import a bounded compatibility.json report"
+    )
+    attestation_import.add_argument("agent_id")
+    attestation_import.add_argument("path")
+    attestation_import.add_argument("--source-revision", required=True)
+    attestation_import.add_argument("--tool-version", required=True)
+    attestation_import.add_argument("--db", default="agent-society.db")
+    attestation_import.add_argument("--json", action="store_true")
+    attestation_list = attestation_commands.add_parser(
+        "list", help="list imported conformance attestations"
+    )
+    attestation_list.add_argument("agent_id", nargs="?")
+    attestation_list.add_argument("--db", default="agent-society.db")
+    attestation_list.add_argument("--json", action="store_true")
+
+    doctor = a2a_commands.add_parser(
+        "doctor", help="check remote deployment readiness without sending a task"
+    )
+    doctor.add_argument("agent_id")
+    doctor.add_argument("task_type")
+    doctor.add_argument("--allow-insecure-localhost", action="store_true")
+    doctor.add_argument("--db", default="agent-society.db")
+    doctor.add_argument("--json", action="store_true")
+    self_test = a2a_commands.add_parser(
+        "self-test", help="run the local deterministic A2A reliability campaign"
+    )
+    self_test.add_argument("--db", default="agent-society.db")
+    self_test.add_argument("--json", action="store_true")
+    decisions = a2a_commands.add_parser(
+        "decisions", help="inspect durable remote policy decisions"
+    )
+    decisions.add_argument("goal_id", nargs="?")
+    decisions.add_argument("--db", default="agent-society.db")
+    decisions.add_argument("--json", action="store_true")
+
     maintain = commands.add_parser(
         "maintain", help="inspect a GitHub issue and produce a reviewed proposal"
     )
@@ -645,6 +738,131 @@ def main(argv: Sequence[str] | None = None) -> int:
                     value = repository.list_delegations()
                     human = f"{len(value)} delegations"
                 _emit(value, args.json, human)
+                return 0
+            if args.a2a_command == "policy":
+                if args.policy_command in {"validate", "import"}:
+                    value = parse_policy_document(
+                        _read_bounded(args.path, 1_048_576, "delegation policy")
+                    )
+                    if args.policy_command == "import":
+                        repository.save_policy(value)
+                    action = "Validated" if args.policy_command == "validate" else "Imported"
+                    _emit(
+                        value,
+                        args.json,
+                        f"{action} policy {value.policy_id}@{value.version} "
+                        f"({value.policy_digest})",
+                    )
+                    return 0
+                if args.policy_command == "list":
+                    value = {
+                        "policies": repository.list_policies(),
+                        "activations": repository.list_policy_activations(),
+                    }
+                    _emit(
+                        value,
+                        args.json,
+                        f"{len(value['policies'])} policies, "
+                        f"{len(value['activations'])} activations",
+                    )
+                    return 0
+                if args.policy_command == "activate":
+                    policy_value = repository.get_policy(args.policy_digest)
+                    if policy_value is None:
+                        raise KeyError(f"policy not found: {args.policy_digest}")
+                    value = PolicyActivation.create(
+                        args.task_type, policy_value, args.by
+                    )
+                    repository.activate_policy(value)
+                    _emit(
+                        value,
+                        args.json,
+                        f"Activated {value.policy_digest} for {value.task_type}",
+                    )
+                    return 0
+                registration = repository.get_remote_agent(args.agent_id)
+                if registration is None:
+                    raise KeyError(f"remote agent not found: {args.agent_id}")
+                value = DelegationPolicyEvaluator(repository).decide(
+                    Task.create(
+                        "policy-simulation",
+                        f"simulate:{args.task_type}:{args.agent_id}",
+                        args.task_type,
+                        "Read-only delegation policy simulation",
+                        max_attempts=1,
+                    ),
+                    registration,
+                    1,
+                    A2ALimits(),
+                    persist=False,
+                    reuse_existing=False,
+                )
+                _emit(
+                    value,
+                    args.json,
+                    f"Policy simulation: {value.verdict.value}",
+                )
+                return 0 if value.verdict == PolicyVerdict.ALLOW else 1
+            if args.a2a_command == "attestation":
+                if args.attestation_command == "list":
+                    value = repository.list_attestations(args.agent_id)
+                    _emit(value, args.json, f"{len(value)} attestations")
+                    return 0
+                registration = repository.get_remote_agent(args.agent_id)
+                if registration is None:
+                    raise KeyError(f"remote agent not found: {args.agent_id}")
+                value = parse_a2a_tck_report(
+                    _read_bounded(args.path, 4_194_304, "A2A TCK report"),
+                    registration,
+                    source_revision=args.source_revision,
+                    tool_version=args.tool_version,
+                )
+                repository.save_attestation(value)
+                _emit(
+                    value,
+                    args.json,
+                    f"Imported {'passing' if value.passed else 'failing'} "
+                    f"attestation {value.attestation_id}",
+                )
+                return 0 if value.passed else 1
+            if args.a2a_command == "doctor":
+                registration = repository.get_remote_agent(args.agent_id)
+                if registration is None:
+                    raise KeyError(f"remote agent not found: {args.agent_id}")
+                token = _registration_token(registration.auth_env)
+                limits = A2ALimits()
+                inspection = A2AHTTPClient(
+                    auth_token=token,
+                    limits=limits,
+                    allow_insecure_localhost=(
+                        registration.allow_insecure_localhost
+                        or args.allow_insecure_localhost
+                    ),
+                ).inspect_card(registration.card_url)
+                value = build_doctor_report(
+                    repository,
+                    registration,
+                    inspection,
+                    args.task_type,
+                    limits,
+                )
+                _emit(
+                    value.to_dict(),
+                    args.json,
+                    f"A2A readiness: {'ready' if value.ready else 'not ready'}",
+                )
+                return 0 if value.ready else 1
+            if args.a2a_command == "self-test":
+                value = run_reliability_campaign()
+                _emit(
+                    value.to_dict(),
+                    args.json,
+                    f"A2A reliability: {'pass' if value.passed else 'fail'}",
+                )
+                return 0 if value.passed else 1
+            if args.a2a_command == "decisions":
+                value = repository.list_policy_decisions(args.goal_id)
+                _emit(value, args.json, f"{len(value)} policy decisions")
                 return 0
             delegation = repository.get_delegation(args.delegation_id)
             if delegation is None:

@@ -1,0 +1,64 @@
+{
+  "summary": {
+    "timestamp": "2026-07-16T10:00:00+00:00",
+    "sut_url": "https://agent.test",
+    "spec_version": "1.0",
+    "overall_compatibility": "100.0%",
+    "must_compatibility": "100.0%",
+    "should_compatibility": "100.0%",
+    "may_compatibility": "100.0%"
+  },
+  "per_requirement": {
+    "A2A-HTTP-001": {
+      "level": "MUST",
+      "status": "PASS",
+      "transports": {
+        "http_json": "PASS"
+      },
+      "errors": [],
+      "test_ids": [
+        "tests/compatibility/http_json/test_http_status.py::test_send_message"
+      ]
+    },
+    "A2A-CARD-001": {
+      "level": "SHOULD",
+      "status": "PASS",
+      "transports": {
+        "http_json": "PASS"
+      },
+      "errors": [],
+      "test_ids": [
+        "tests/compatibility/agent_card/test_agent_card.py::test_card"
+      ]
+    }
+  },
+  "per_transport": {
+    "http_json": {
+      "total": 2,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    }
+  },
+  "agent_card": {
+    "name": "Research Agent",
+    "description": "A test research agent",
+    "version": "1.0.0",
+    "supportedInterfaces": [
+      {
+        "url": "https://agent.test/a2a",
+        "protocolBinding": "HTTP+JSON",
+        "protocolVersion": "1.0",
+        "tenant": "tenant-a"
+      }
+    ],
+    "skills": [
+      {
+        "id": "research",
+        "name": "Research",
+        "description": "Produces sourced research",
+        "tags": ["research"]
+      }
+    ]
+  }
+}

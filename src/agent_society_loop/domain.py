@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -92,6 +93,11 @@ class DelegationStatus(str, Enum):
     REJECTED = "rejected"
     INTERRUPTED = "interrupted"
     UNKNOWN = "unknown"
+
+
+class PolicyVerdict(str, Enum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -736,6 +742,282 @@ _REMOTE_CONTEXT_SECTIONS = frozenset(
     }
 )
 
+_ATTESTATION_KINDS = frozenset({"a2a-tck"})
+_SAFE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}")
+_SAFE_REASON_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+
+
+def _safe_id(value: str, label: str) -> str:
+    normalized = str(value).strip()
+    if not _SAFE_ID_PATTERN.fullmatch(normalized):
+        raise ValueError(f"{label} is invalid")
+    return normalized
+
+
+def _record_identity(value: str, label: str) -> str:
+    normalized = str(value).strip()
+    if (
+        not normalized
+        or len(normalized) > 256
+        or any(ord(character) < 32 for character in normalized)
+    ):
+        raise ValueError(f"{label} is invalid")
+    return normalized
+
+
+def _normalized_values(values: Sequence[str], label: str) -> tuple[str, ...]:
+    normalized = tuple(sorted({_safe_id(value, label) for value in values}))
+    if not normalized:
+        raise ValueError(f"{label} must not be empty")
+    return normalized
+
+
+def _sha256_digest(value: str, label: str) -> str:
+    normalized = str(value).strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ValueError(f"{label} SHA-256 must be 64 hexadecimal characters")
+    return normalized
+
+
+def _positive_integer(value: int, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{label} must be a positive integer")
+    return value
+
+
+def _aware_timestamp(value: str, label: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except ValueError as error:
+        raise ValueError(f"{label} timestamp is invalid") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{label} timestamp must include a timezone")
+    return parsed.isoformat()
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationRule:
+    rule_id: str
+    task_types: tuple[str, ...]
+    agent_ids: tuple[str, ...]
+    card_sha256s: tuple[str, ...]
+    allowed_context_sections: tuple[str, ...]
+    max_request_bytes: int
+    max_result_bytes: int
+    max_polls: int
+    total_timeout_seconds: int
+    required_attestation_kinds: tuple[str, ...]
+    max_attestation_age_hours: int
+
+    @classmethod
+    def create(
+        cls,
+        rule_id: str,
+        task_types: Sequence[str],
+        agent_ids: Sequence[str],
+        card_sha256s: Sequence[str],
+        *,
+        allowed_context_sections: Sequence[str],
+        max_request_bytes: int,
+        max_result_bytes: int,
+        max_polls: int,
+        total_timeout_seconds: int,
+        required_attestation_kinds: Sequence[str],
+        max_attestation_age_hours: int,
+    ) -> DelegationRule:
+        contexts = tuple(
+            sorted({str(item).strip() for item in allowed_context_sections})
+        )
+        if any(item not in _REMOTE_CONTEXT_SECTIONS for item in contexts):
+            raise ValueError("remote context section is not allowed")
+        attestation_kinds = tuple(
+            sorted({str(item).strip() for item in required_attestation_kinds})
+        )
+        if not attestation_kinds or any(
+            item not in _ATTESTATION_KINDS for item in attestation_kinds
+        ):
+            raise ValueError("required attestation kind is not allowed")
+        digests = tuple(
+            sorted({_sha256_digest(value, "card") for value in card_sha256s})
+        )
+        if not digests:
+            raise ValueError("card SHA-256 list must not be empty")
+        return cls(
+            rule_id=_safe_id(rule_id, "rule ID"),
+            task_types=_normalized_values(task_types, "task type"),
+            agent_ids=_normalized_values(agent_ids, "agent ID"),
+            card_sha256s=digests,
+            allowed_context_sections=contexts,
+            max_request_bytes=_positive_integer(max_request_bytes, "max request bytes"),
+            max_result_bytes=_positive_integer(max_result_bytes, "max result bytes"),
+            max_polls=_positive_integer(max_polls, "max polls"),
+            total_timeout_seconds=_positive_integer(
+                total_timeout_seconds, "total timeout seconds"
+            ),
+            required_attestation_kinds=attestation_kinds,
+            max_attestation_age_hours=_positive_integer(
+                max_attestation_age_hours, "max attestation age hours"
+            ),
+        )
+
+    def canonical_payload(self) -> dict[str, Any]:
+        return {
+            "rule_id": self.rule_id,
+            "task_types": list(self.task_types),
+            "agent_ids": list(self.agent_ids),
+            "card_sha256s": list(self.card_sha256s),
+            "allowed_context_sections": list(self.allowed_context_sections),
+            "max_request_bytes": self.max_request_bytes,
+            "max_result_bytes": self.max_result_bytes,
+            "max_polls": self.max_polls,
+            "total_timeout_seconds": self.total_timeout_seconds,
+            "required_attestation_kinds": list(self.required_attestation_kinds),
+            "max_attestation_age_hours": self.max_attestation_age_hours,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationPolicy:
+    policy_id: str
+    version: int
+    default: str
+    rules: tuple[DelegationRule, ...]
+    policy_digest: str
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        policy_id: str,
+        version: int,
+        rules: Sequence[DelegationRule],
+        *,
+        default: str = "deny",
+    ) -> DelegationPolicy:
+        if default != "deny":
+            raise ValueError("delegation policy default must be deny")
+        normalized_rules = tuple(sorted(rules, key=lambda item: item.rule_id))
+        if not normalized_rules:
+            raise ValueError("delegation policy rules must not be empty")
+        if len({rule.rule_id for rule in normalized_rules}) != len(normalized_rules):
+            raise ValueError("delegation policy rule IDs must be unique")
+        for index, left in enumerate(normalized_rules):
+            for right in normalized_rules[index + 1 :]:
+                if (
+                    set(left.task_types) & set(right.task_types)
+                    and set(left.agent_ids) & set(right.agent_ids)
+                    and set(left.card_sha256s) & set(right.card_sha256s)
+                ):
+                    raise ValueError("delegation policy rule domains overlap")
+        normalized_id = _safe_id(policy_id, "policy ID")
+        normalized_version = _positive_integer(version, "policy version")
+        payload = {
+            "policy_id": normalized_id,
+            "version": normalized_version,
+            "default": default,
+            "rules": [rule.canonical_payload() for rule in normalized_rules],
+        }
+        canonical = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        return cls(
+            policy_id=normalized_id,
+            version=normalized_version,
+            default=default,
+            rules=normalized_rules,
+            policy_digest=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyActivation:
+    task_type: str
+    policy_digest: str
+    policy_id: str
+    policy_version: int
+    activated_by: str
+    activated_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls, task_type: str, policy: DelegationPolicy, activated_by: str
+    ) -> PolicyActivation:
+        normalized_task_type = _safe_id(task_type, "task type")
+        if not any(normalized_task_type in rule.task_types for rule in policy.rules):
+            raise ValueError("policy does not govern the activated task type")
+        return cls(
+            task_type=normalized_task_type,
+            policy_digest=policy.policy_digest,
+            policy_id=policy.policy_id,
+            policy_version=policy.version,
+            activated_by=_safe_id(activated_by, "activating operator"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConformanceAttestation:
+    attestation_id: str
+    agent_id: str
+    card_sha256: str
+    kind: str
+    report_sha256: str
+    source_revision: str
+    tool_version: str
+    spec_version: str
+    observed_at: str
+    passed: bool
+    metrics: dict[str, float | int]
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        agent_id: str,
+        card_sha256: str,
+        kind: str,
+        report_sha256: str,
+        source_revision: str,
+        tool_version: str,
+        spec_version: str,
+        observed_at: str,
+        passed: bool,
+        metrics: dict[str, float | int],
+    ) -> ConformanceAttestation:
+        normalized_kind = str(kind).strip()
+        if normalized_kind not in _ATTESTATION_KINDS:
+            raise ValueError("attestation kind is not allowed")
+        revision = str(source_revision).strip().casefold()
+        if not re.fullmatch(r"[0-9a-f]{40}", revision):
+            raise ValueError("attestation source revision must be a 40-character SHA")
+        version = str(tool_version).strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.+-]{0,63}", version):
+            raise ValueError("attestation tool version is invalid")
+        normalized_metrics: dict[str, float | int] = {}
+        for name, value in metrics.items():
+            metric_name = _safe_id(name, "attestation metric")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError("attestation metric values must be numeric")
+            if not math.isfinite(float(value)):
+                raise ValueError("attestation metric values must be finite")
+            if "compatibility" in metric_name and not 0 <= float(value) <= 100:
+                raise ValueError("attestation percentage must be between 0 and 100")
+            normalized_metrics[metric_name] = value
+        report_digest = _sha256_digest(report_sha256, "report")
+        return cls(
+            attestation_id=f"attestation-{report_digest[:16]}",
+            agent_id=_safe_id(agent_id, "agent ID"),
+            card_sha256=_sha256_digest(card_sha256, "card"),
+            kind=normalized_kind,
+            report_sha256=report_digest,
+            source_revision=revision,
+            tool_version=version,
+            spec_version=str(spec_version).strip(),
+            observed_at=_aware_timestamp(observed_at, "attestation observation"),
+            passed=bool(passed),
+            metrics=normalized_metrics,
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class RemoteAgentRegistration:
@@ -804,6 +1086,100 @@ class RemoteAgentRegistration:
         return tuple(sorted(self.skill_by_task_type))
 
 
+@dataclass(frozen=True, slots=True)
+class PolicyDecision:
+    decision_id: str
+    goal_id: str
+    task_id: str
+    attempt_no: int
+    agent_id: str
+    model_id: str
+    card_sha256: str
+    verdict: PolicyVerdict
+    policy_digest: str
+    policy_rule_id: str
+    reason_codes: tuple[str, ...]
+    allowed_context_sections: tuple[str, ...]
+    max_request_bytes: int
+    max_result_bytes: int
+    max_polls: int
+    total_timeout_seconds: int
+    attestation_ids: tuple[str, ...]
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        attempt_no: int,
+        registration: RemoteAgentRegistration,
+        verdict: PolicyVerdict,
+        *,
+        policy_digest: str = "",
+        policy_rule_id: str = "",
+        reason_codes: Sequence[str],
+        allowed_context_sections: Sequence[str] = (),
+        max_request_bytes: int = 0,
+        max_result_bytes: int = 0,
+        max_polls: int = 0,
+        total_timeout_seconds: int = 0,
+        attestation_ids: Sequence[str] = (),
+    ) -> PolicyDecision:
+        if attempt_no < 1:
+            raise ValueError("policy decision attempt number must be positive")
+        reasons = tuple(sorted({str(item).strip() for item in reason_codes}))
+        if not reasons or any(not _SAFE_REASON_PATTERN.fullmatch(item) for item in reasons):
+            raise ValueError("policy decision reason code is invalid")
+        contexts = tuple(
+            sorted({str(item).strip() for item in allowed_context_sections})
+        )
+        if any(item not in _REMOTE_CONTEXT_SECTIONS for item in contexts):
+            raise ValueError("policy decision context section is not allowed")
+        normalized_verdict = PolicyVerdict(verdict)
+        digest = ""
+        if policy_digest:
+            digest = _sha256_digest(policy_digest, "policy")
+        rule_id = ""
+        if policy_rule_id:
+            rule_id = _safe_id(policy_rule_id, "policy rule ID")
+        limits = (
+            max_request_bytes,
+            max_result_bytes,
+            max_polls,
+            total_timeout_seconds,
+        )
+        if normalized_verdict == PolicyVerdict.ALLOW:
+            if not digest or not rule_id:
+                raise ValueError("allowed policy decision requires policy and rule identity")
+            if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in limits):
+                raise ValueError("allowed policy decision limits must be positive")
+        elif any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in limits):
+            raise ValueError("denied policy decision limits must not be negative")
+        normalized_attestations = tuple(
+            sorted({_safe_id(item, "attestation ID") for item in attestation_ids})
+        )
+        return cls(
+            decision_id=f"decision-{uuid4().hex[:16]}",
+            goal_id=_record_identity(goal_id, "goal ID"),
+            task_id=_record_identity(task_id, "task ID"),
+            attempt_no=attempt_no,
+            agent_id=registration.agent_id,
+            model_id=registration.model_id,
+            card_sha256=registration.card_sha256,
+            verdict=normalized_verdict,
+            policy_digest=digest,
+            policy_rule_id=rule_id,
+            reason_codes=reasons,
+            allowed_context_sections=contexts,
+            max_request_bytes=max_request_bytes,
+            max_result_bytes=max_result_bytes,
+            max_polls=max_polls,
+            total_timeout_seconds=total_timeout_seconds,
+            attestation_ids=normalized_attestations,
+        )
+
+
 _DELEGATION_TRANSITIONS: dict[DelegationStatus, frozenset[DelegationStatus]] = {
     DelegationStatus.PREPARED: frozenset({DelegationStatus.SUBMITTING}),
     DelegationStatus.SUBMITTING: frozenset(
@@ -854,6 +1230,9 @@ class DelegationRecord:
     result_sha256: str = ""
     error_category: str = ""
     canceled_by: str = ""
+    policy_decision_id: str = ""
+    policy_digest: str = ""
+    policy_rule_id: str = ""
     created_at: str = field(default_factory=utc_now)
     updated_at: str = field(default_factory=utc_now)
 
@@ -866,6 +1245,8 @@ class DelegationRecord:
         registration: RemoteAgentRegistration,
         message_id: str,
         payload_sha256: str,
+        *,
+        policy_decision: PolicyDecision | None = None,
     ) -> DelegationRecord:
         values = (goal_id, task_id, message_id, payload_sha256)
         if any(not value.strip() for value in values):
@@ -874,6 +1255,16 @@ class DelegationRecord:
             raise ValueError("delegation attempt number must be positive")
         if not re.fullmatch(r"[0-9a-fA-F]{64}", payload_sha256):
             raise ValueError("delegation payload SHA-256 is invalid")
+        if policy_decision is not None and (
+            policy_decision.verdict != PolicyVerdict.ALLOW
+            or policy_decision.goal_id != goal_id.strip()
+            or policy_decision.task_id != task_id.strip()
+            or policy_decision.attempt_no != attempt_no
+            or policy_decision.agent_id != registration.agent_id
+            or policy_decision.model_id != registration.model_id
+            or policy_decision.card_sha256 != registration.card_sha256
+        ):
+            raise ValueError("delegation policy decision does not match delegation")
         return cls(
             delegation_id=f"delegation-{uuid4().hex[:16]}",
             goal_id=goal_id.strip(),
@@ -884,6 +1275,15 @@ class DelegationRecord:
             card_sha256=registration.card_sha256,
             message_id=message_id.strip(),
             payload_sha256=payload_sha256.casefold(),
+            policy_decision_id=(
+                policy_decision.decision_id if policy_decision is not None else ""
+            ),
+            policy_digest=(
+                policy_decision.policy_digest if policy_decision is not None else ""
+            ),
+            policy_rule_id=(
+                policy_decision.policy_rule_id if policy_decision is not None else ""
+            ),
         )
 
     def advance(

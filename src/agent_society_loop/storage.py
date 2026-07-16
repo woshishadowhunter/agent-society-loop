@@ -15,8 +15,11 @@ from .domain import (
     ApprovalStatus,
     Artifact,
     Attempt,
+    ConformanceAttestation,
     Defect,
+    DelegationPolicy,
     DelegationRecord,
+    DelegationRule,
     DelegationStatus,
     DeploymentRecord,
     Event,
@@ -27,6 +30,9 @@ from .domain import (
     GoalStatus,
     KnowledgeItem,
     PerformanceRecord,
+    PolicyActivation,
+    PolicyDecision,
+    PolicyVerdict,
     PublicationRecord,
     PublicationStatus,
     RemoteAgentRegistration,
@@ -198,6 +204,38 @@ class SQLiteRepository:
             );
             CREATE INDEX IF NOT EXISTS delegations_goal_idx
                 ON delegations(goal_id, task_id, attempt_no);
+            CREATE TABLE IF NOT EXISTS delegation_policies (
+                policy_digest TEXT PRIMARY KEY,
+                policy_id TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS delegation_policies_id_idx
+                ON delegation_policies(policy_id);
+            CREATE TABLE IF NOT EXISTS policy_activations (
+                task_type TEXT PRIMARY KEY,
+                policy_digest TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS conformance_attestations (
+                attestation_id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                card_sha256 TEXT NOT NULL,
+                report_sha256 TEXT UNIQUE NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS conformance_attestations_agent_idx
+                ON conformance_attestations(agent_id, card_sha256);
+            CREATE TABLE IF NOT EXISTS policy_decisions (
+                decision_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(goal_id, task_id, attempt_no, agent_id)
+            );
+            CREATE INDEX IF NOT EXISTS policy_decisions_goal_idx
+                ON policy_decisions(goal_id, task_id, attempt_no);
             """
         )
         self.connection.commit()
@@ -828,6 +866,165 @@ class SQLiteRepository:
         ).fetchall()
         return [_remote_agent_from_payload(row["payload"]) for row in rows]
 
+    def save_policy(self, policy: DelegationPolicy) -> None:
+        existing = self.get_policy(policy.policy_digest)
+        if existing is not None and replace(
+            existing, created_at=policy.created_at
+        ) != policy:
+            raise ValueError("delegation policy identity cannot change")
+        self.connection.execute(
+            "INSERT INTO delegation_policies(policy_digest, policy_id, payload) "
+            "VALUES (?, ?, ?) ON CONFLICT(policy_digest) DO NOTHING",
+            (policy.policy_digest, policy.policy_id, _dump(asdict(policy))),
+        )
+        self.connection.commit()
+
+    def get_policy(self, policy_digest: str) -> DelegationPolicy | None:
+        row = self.connection.execute(
+            "SELECT payload FROM delegation_policies WHERE policy_digest=?",
+            (policy_digest,),
+        ).fetchone()
+        return _policy_from_payload(row["payload"]) if row is not None else None
+
+    def list_policies(self) -> list[DelegationPolicy]:
+        rows = self.connection.execute(
+            "SELECT payload FROM delegation_policies ORDER BY policy_id, rowid"
+        ).fetchall()
+        return [_policy_from_payload(row["payload"]) for row in rows]
+
+    def activate_policy(self, activation: PolicyActivation) -> None:
+        policy = self.get_policy(activation.policy_digest)
+        if policy is None or (
+            policy.policy_id != activation.policy_id
+            or policy.version != activation.policy_version
+        ):
+            raise ValueError("policy activation references an unknown policy")
+        self.connection.execute(
+            "INSERT INTO policy_activations(task_type, policy_digest, payload) "
+            "VALUES (?, ?, ?) ON CONFLICT(task_type) DO UPDATE SET "
+            "policy_digest=excluded.policy_digest, payload=excluded.payload",
+            (
+                activation.task_type,
+                activation.policy_digest,
+                _dump(asdict(activation)),
+            ),
+        )
+        self.connection.commit()
+
+    def get_policy_activation(self, task_type: str) -> PolicyActivation | None:
+        row = self.connection.execute(
+            "SELECT payload FROM policy_activations WHERE task_type=?", (task_type,)
+        ).fetchone()
+        return _policy_activation_from_payload(row["payload"]) if row else None
+
+    def list_policy_activations(self) -> list[PolicyActivation]:
+        rows = self.connection.execute(
+            "SELECT payload FROM policy_activations ORDER BY task_type"
+        ).fetchall()
+        return [_policy_activation_from_payload(row["payload"]) for row in rows]
+
+    def save_attestation(self, attestation: ConformanceAttestation) -> None:
+        existing = self.get_attestation(attestation.attestation_id)
+        if existing is not None and replace(
+            existing, created_at=attestation.created_at
+        ) != attestation:
+            raise ValueError("conformance attestation identity cannot change")
+        try:
+            self.connection.execute(
+                "INSERT INTO conformance_attestations("
+                "attestation_id, agent_id, card_sha256, report_sha256, payload"
+                ") VALUES (?, ?, ?, ?, ?) ON CONFLICT(attestation_id) DO NOTHING",
+                (
+                    attestation.attestation_id,
+                    attestation.agent_id,
+                    attestation.card_sha256,
+                    attestation.report_sha256,
+                    _dump(asdict(attestation)),
+                ),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("attestation report identity is already bound") from error
+
+    def get_attestation(
+        self, attestation_id: str
+    ) -> ConformanceAttestation | None:
+        row = self.connection.execute(
+            "SELECT payload FROM conformance_attestations WHERE attestation_id=?",
+            (attestation_id,),
+        ).fetchone()
+        return _attestation_from_payload(row["payload"]) if row else None
+
+    def list_attestations(
+        self, agent_id: str | None = None, card_sha256: str | None = None
+    ) -> list[ConformanceAttestation]:
+        clauses: list[str] = []
+        arguments: list[str] = []
+        if agent_id is not None:
+            clauses.append("agent_id=?")
+            arguments.append(agent_id)
+        if card_sha256 is not None:
+            clauses.append("card_sha256=?")
+            arguments.append(card_sha256)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self.connection.execute(
+            f"SELECT payload FROM conformance_attestations{where} ORDER BY rowid",
+            arguments,
+        ).fetchall()
+        return [_attestation_from_payload(row["payload"]) for row in rows]
+
+    def save_policy_decision(self, decision: PolicyDecision) -> None:
+        existing = self.get_policy_decision(decision.decision_id)
+        if existing is not None and existing != decision:
+            raise ValueError("policy decision identity cannot change")
+        try:
+            self.connection.execute(
+                "INSERT INTO policy_decisions("
+                "decision_id, goal_id, task_id, attempt_no, agent_id, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(decision_id) DO NOTHING",
+                (
+                    decision.decision_id,
+                    decision.goal_id,
+                    decision.task_id,
+                    decision.attempt_no,
+                    decision.agent_id,
+                    _dump(asdict(decision)),
+                ),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("policy decision attempt identity already exists") from error
+
+    def get_policy_decision(self, decision_id: str) -> PolicyDecision | None:
+        row = self.connection.execute(
+            "SELECT payload FROM policy_decisions WHERE decision_id=?", (decision_id,)
+        ).fetchone()
+        return _policy_decision_from_payload(row["payload"]) if row else None
+
+    def get_attempt_policy_decision(
+        self, goal_id: str, task_id: str, attempt_no: int, agent_id: str
+    ) -> PolicyDecision | None:
+        row = self.connection.execute(
+            "SELECT payload FROM policy_decisions "
+            "WHERE goal_id=? AND task_id=? AND attempt_no=? AND agent_id=?",
+            (goal_id, task_id, attempt_no, agent_id),
+        ).fetchone()
+        return _policy_decision_from_payload(row["payload"]) if row else None
+
+    def list_policy_decisions(
+        self, goal_id: str | None = None
+    ) -> list[PolicyDecision]:
+        if goal_id is None:
+            rows = self.connection.execute(
+                "SELECT payload FROM policy_decisions ORDER BY rowid"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT payload FROM policy_decisions WHERE goal_id=? ORDER BY rowid",
+                (goal_id,),
+            ).fetchall()
+        return [_policy_decision_from_payload(row["payload"]) for row in rows]
+
     def save_delegation(self, delegation: DelegationRecord) -> None:
         existing = self.get_delegation(delegation.delegation_id)
         immutable = (
@@ -839,6 +1036,9 @@ class SQLiteRepository:
             "card_sha256",
             "message_id",
             "payload_sha256",
+            "policy_decision_id",
+            "policy_digest",
+            "policy_rule_id",
             "created_at",
         )
         if existing is not None and any(
@@ -907,7 +1107,46 @@ def _remote_agent_from_payload(payload: str) -> RemoteAgentRegistration:
     return RemoteAgentRegistration(**data)
 
 
+def _rule_from_data(data: dict[str, Any]) -> DelegationRule:
+    values = dict(data)
+    for name in (
+        "task_types",
+        "agent_ids",
+        "card_sha256s",
+        "allowed_context_sections",
+        "required_attestation_kinds",
+    ):
+        values[name] = tuple(values[name])
+    return DelegationRule(**values)
+
+
+def _policy_from_payload(payload: str) -> DelegationPolicy:
+    data = _load(payload)
+    data["rules"] = tuple(_rule_from_data(item) for item in data["rules"])
+    return DelegationPolicy(**data)
+
+
+def _policy_activation_from_payload(payload: str) -> PolicyActivation:
+    return PolicyActivation(**_load(payload))
+
+
+def _attestation_from_payload(payload: str) -> ConformanceAttestation:
+    return ConformanceAttestation(**_load(payload))
+
+
+def _policy_decision_from_payload(payload: str) -> PolicyDecision:
+    data = _load(payload)
+    data["verdict"] = PolicyVerdict(data["verdict"])
+    data["reason_codes"] = tuple(data["reason_codes"])
+    data["allowed_context_sections"] = tuple(data["allowed_context_sections"])
+    data["attestation_ids"] = tuple(data["attestation_ids"])
+    return PolicyDecision(**data)
+
+
 def _delegation_from_payload(payload: str) -> DelegationRecord:
     data = _load(payload)
     data["status"] = DelegationStatus(data["status"])
+    data.setdefault("policy_decision_id", "")
+    data.setdefault("policy_digest", "")
+    data.setdefault("policy_rule_id", "")
     return DelegationRecord(**data)

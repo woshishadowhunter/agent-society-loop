@@ -10,9 +10,23 @@ from .a2a import (
     A2ARemoteExecutor,
     A2ARemoteWorker,
     AgentCardInspection,
+    PolicyDenied,
     RemoteExecution,
     inspect_agent_card,
     register_remote_agent,
+)
+from .a2a_governance import (
+    DoctorCheck,
+    DoctorReport,
+    DelegationPolicyEvaluator,
+    build_doctor_report,
+    parse_a2a_tck_report,
+    parse_policy_document,
+)
+from .a2a_reliability import (
+    ReliabilityCheck,
+    ReliabilityReport,
+    run_reliability_campaign,
 )
 
 from .domain import (
@@ -22,7 +36,10 @@ from .domain import (
     CandidateExecution,
     CandidateIdentity,
     CaseEvaluation,
+    ConformanceAttestation,
+    DelegationPolicy,
     DelegationRecord,
+    DelegationRule,
     DelegationStatus,
     DeploymentRecord,
     EvaluationOutcome,
@@ -30,6 +47,9 @@ from .domain import (
     EvaluationStatus,
     Goal,
     GoalStatus,
+    PolicyActivation,
+    PolicyDecision,
+    PolicyVerdict,
     PublicationRecord,
     PublicationStatus,
     RemoteAgentRegistration,
@@ -51,7 +71,10 @@ __all__ = [
     "CandidateExecution",
     "CandidateIdentity",
     "CaseEvaluation",
+    "ConformanceAttestation",
+    "DelegationPolicy",
     "DelegationRecord",
+    "DelegationRule",
     "DelegationStatus",
     "DeploymentRecord",
     "EvaluationOutcome",
@@ -59,6 +82,9 @@ __all__ = [
     "EvaluationStatus",
     "Goal",
     "GoalStatus",
+    "PolicyActivation",
+    "PolicyDecision",
+    "PolicyVerdict",
     "PublicationRecord",
     "PublicationStatus",
     "RemoteAgentRegistration",
@@ -80,9 +106,19 @@ __all__ = [
     "A2ARemoteExecutor",
     "A2ARemoteWorker",
     "AgentCardInspection",
+    "PolicyDenied",
     "RemoteExecution",
     "inspect_agent_card",
     "register_remote_agent",
+    "DelegationPolicyEvaluator",
+    "DoctorCheck",
+    "DoctorReport",
+    "build_doctor_report",
+    "parse_a2a_tck_report",
+    "parse_policy_document",
+    "ReliabilityCheck",
+    "ReliabilityReport",
+    "run_reliability_campaign",
 ]
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"

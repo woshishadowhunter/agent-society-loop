@@ -16,6 +16,11 @@ class WorkerBlocked(RuntimeError):
         "remote_task_id",
         "status",
         "error_category",
+        "policy_decision_id",
+        "policy_digest",
+        "policy_rule_id",
+        "policy_verdict",
+        "policy_reason",
     }
 
     def __init__(self, reason: str, evidence: dict[str, Any] | None = None):

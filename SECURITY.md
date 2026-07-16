@@ -17,4 +17,8 @@ You should receive an acknowledgement within seven days. We will validate the re
 - Review tool permissions before connecting workers to external systems.
 - Use bounded attempts and actions for every production run.
 - Do not store personal or confidential data in demonstration databases.
+- Protect the SQLite database as an operator trust boundary; policy, deployment, attestation, and decision records are not externally signed.
+- Run the official A2A TCK outside the runtime at a reviewed pinned revision, preserve its artifact, and import only the bounded compatibility JSON.
+- Treat TCK source revision and tool version fields as operator provenance, not cryptographic proof.
+- Run `agent-society a2a doctor` before enabling remote production traffic and `agent-society a2a self-test` after transport changes.
 
