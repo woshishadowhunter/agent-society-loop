@@ -1,0 +1,274 @@
+"""Goal lifecycle engine implementing the outer and inner loops."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from time import perf_counter
+from typing import Mapping
+
+from .domain import (
+    Artifact,
+    Defect,
+    Event,
+    Goal,
+    GoalStatus,
+    Review,
+    RunBudget,
+    RunReport,
+    Task,
+    TaskStatus,
+    Verdict,
+    transition_goal,
+    validate_task_graph,
+)
+from .memory import MemoryManager
+from .ports import Planner, Reviewer, Worker
+from .selection import PerformanceWeightedSelector
+from .storage import SQLiteRepository
+
+
+class LoopEngine:
+    def __init__(
+        self,
+        *,
+        planner: Planner,
+        workers: Mapping[str, Worker],
+        reviewer: Reviewer,
+        repository: SQLiteRepository,
+        memory: MemoryManager,
+        selector: PerformanceWeightedSelector,
+        budget: RunBudget | None = None,
+    ):
+        self.planner = planner
+        self.workers = dict(workers)
+        self.reviewer = reviewer
+        self.repository = repository
+        self.memory = memory
+        self.selector = selector
+        self.budget = budget or RunBudget()
+
+    def create_goal(
+        self, title: str, description: str, *, goal_id: str | None = None
+    ) -> Goal:
+        goal = Goal.create(title, description, goal_id)
+        self.repository.save_goal(goal)
+        self._event(goal.goal_id, "goal.created", {"title": goal.title})
+        return goal
+
+    def run(self, goal_id: str) -> RunReport:
+        goal = self.repository.get_goal(goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found: {goal_id}")
+        if goal.status in {GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}:
+            return self._report(goal)
+
+        if goal.status in {GoalStatus.CREATED, GoalStatus.PLANNING}:
+            goal = self._plan(goal)
+            if goal.status == GoalStatus.FAILED:
+                return self._report(goal)
+
+        self._recover_interrupted_tasks(goal.goal_id)
+        return self._execute(goal)
+
+    def resume(self, goal_id: str) -> RunReport:
+        return self.run(goal_id)
+
+    def _plan(self, goal: Goal) -> Goal:
+        if goal.status == GoalStatus.CREATED:
+            goal = transition_goal(goal, GoalStatus.PLANNING)
+            self.repository.save_goal(goal)
+            self._event(goal.goal_id, "goal.planning", {})
+        try:
+            tasks = list(self.planner.plan(goal, {"knowledge": []}))
+            if not tasks:
+                raise ValueError("planner returned no tasks")
+            if any(task.goal_id != goal.goal_id for task in tasks):
+                raise ValueError("planner returned a task for another goal")
+            validate_task_graph(tasks)
+        except Exception as error:
+            failed = transition_goal(goal, GoalStatus.FAILED, str(error))
+            self.repository.save_goal(failed)
+            self._event(failed.goal_id, "goal.failed", {"reason": str(error), "phase": "planning"})
+            return failed
+
+        self.repository.save_tasks(tasks)
+        self._event(goal.goal_id, "goal.planned", {"task_count": len(tasks)})
+        running = transition_goal(goal, GoalStatus.RUNNING)
+        self.repository.save_goal(running)
+        self._event(goal.goal_id, "goal.running", {})
+        return running
+
+    def _recover_interrupted_tasks(self, goal_id: str) -> None:
+        for task in self.repository.list_tasks(goal_id):
+            if task.status == TaskStatus.RUNNING:
+                self.repository.save_task(replace(task, status=TaskStatus.PENDING))
+                self._event(goal_id, "task.recovered", {"task_id": task.task_id})
+
+    def _execute(self, goal: Goal) -> RunReport:
+        actions = self._attempt_count(goal.goal_id)
+        while True:
+            tasks = self.repository.list_tasks(goal.goal_id)
+            if tasks and all(task.status == TaskStatus.SUCCEEDED for task in tasks):
+                goal = transition_goal(goal, GoalStatus.SUCCEEDED)
+                self.repository.save_goal(goal)
+                self._event(goal.goal_id, "goal.succeeded", {})
+                return self._report(goal)
+
+            if actions >= self.budget.max_actions:
+                reason = f"action budget exhausted at {self.budget.max_actions}"
+                goal = transition_goal(goal, GoalStatus.BLOCKED, reason)
+                self.repository.save_goal(goal)
+                self._event(goal.goal_id, "goal.blocked", {"reason": reason})
+                return self._report(goal)
+
+            succeeded = {
+                task.task_id for task in tasks if task.status == TaskStatus.SUCCEEDED
+            }
+            ready = [
+                task
+                for task in tasks
+                if task.status == TaskStatus.PENDING
+                and set(task.dependencies).issubset(succeeded)
+            ]
+            ready.sort(key=lambda task: (task.position, task.task_id))
+            if not ready:
+                reason = "no task can progress because dependencies are unresolved"
+                goal = transition_goal(goal, GoalStatus.BLOCKED, reason)
+                self.repository.save_goal(goal)
+                self._event(goal.goal_id, "goal.blocked", {"reason": reason})
+                return self._report(goal)
+
+            task = ready[0]
+            try:
+                decision = self.selector.select(
+                    task,
+                    self.repository.list_agents(),
+                    self.repository.list_performance(),
+                )
+                worker = self.workers[decision.agent_id]
+            except (LookupError, KeyError) as error:
+                reason = str(error)
+                goal = transition_goal(goal, GoalStatus.BLOCKED, reason)
+                self.repository.save_goal(goal)
+                self._event(goal.goal_id, "goal.blocked", {"reason": reason})
+                return self._report(goal)
+
+            task = replace(
+                task, status=TaskStatus.RUNNING, assigned_agent_id=decision.agent_id
+            )
+            self.repository.save_task(task)
+            attempt_no = len(self.repository.list_reviews(goal.goal_id, task.task_id)) + 1
+            self._event(
+                goal.goal_id,
+                "task.attempt_started",
+                {
+                    "task_id": task.task_id,
+                    "attempt_no": attempt_no,
+                    "agent_id": decision.agent_id,
+                    "selection": decision.considered,
+                },
+            )
+            started = perf_counter()
+            artifact: Artifact | None = None
+            try:
+                context = self.memory.build_context(goal, task)
+                content = worker.execute(task, context)
+                artifact = Artifact.create(
+                    goal.goal_id, task.task_id, decision.agent_id, content
+                )
+                self.repository.save_artifact(artifact)
+                review = self.reviewer.review(task, content, attempt_no)
+            except Exception as error:
+                review = Review.create(
+                    goal.goal_id,
+                    task.task_id,
+                    attempt_no,
+                    Verdict.FAIL,
+                    0,
+                    [Defect("execution", type(error).__name__, str(error))],
+                    f"Execution failed: {error}",
+                )
+            duration_ms = (perf_counter() - started) * 1000.0
+            self.repository.save_review(review)
+            passed = (
+                artifact is not None
+                and review.verdict == Verdict.PASS
+                and review.score >= self.budget.min_passing_score
+            )
+            self.memory.record_outcome(
+                decision.agent_id, task.task_type, passed, review.score, duration_ms
+            )
+            actions += 1
+
+            if passed:
+                task = replace(
+                    task,
+                    status=TaskStatus.SUCCEEDED,
+                    artifact_id=artifact.artifact_id,
+                )
+                self.repository.save_task(task)
+                self._event(
+                    goal.goal_id,
+                    "task.succeeded",
+                    {
+                        "task_id": task.task_id,
+                        "attempt_no": attempt_no,
+                        "score": review.score,
+                    },
+                )
+                continue
+
+            self._event(
+                goal.goal_id,
+                "task.review_failed",
+                {
+                    "task_id": task.task_id,
+                    "attempt_no": attempt_no,
+                    "score": review.score,
+                    "summary": review.summary,
+                },
+            )
+            if attempt_no >= task.max_attempts:
+                task = replace(task, status=TaskStatus.FAILED)
+                self.repository.save_task(task)
+                reason = (
+                    f"task {task.task_id} exhausted {task.max_attempts} attempts"
+                )
+                goal = transition_goal(goal, GoalStatus.FAILED, reason)
+                self.repository.save_goal(goal)
+                self._event(goal.goal_id, "goal.failed", {"reason": reason})
+                return self._report(goal)
+
+            self.repository.save_task(replace(task, status=TaskStatus.PENDING))
+            self._event(
+                goal.goal_id,
+                "task.retry_scheduled",
+                {"task_id": task.task_id, "next_attempt": attempt_no + 1},
+            )
+
+    def _attempt_count(self, goal_id: str) -> int:
+        return sum(
+            event.event_type == "task.attempt_started"
+            for event in self.repository.list_events(goal_id)
+        )
+
+    def _report(self, goal: Goal) -> RunReport:
+        tasks = self.repository.list_tasks(goal.goal_id)
+        review_counts: dict[str, int] = {}
+        for review in self.repository.list_reviews(goal.goal_id):
+            review_counts[review.task_id] = review_counts.get(review.task_id, 0) + 1
+        attempts = sum(review_counts.values())
+        return RunReport(
+            goal_id=goal.goal_id,
+            status=goal.status,
+            tasks_total=len(tasks),
+            tasks_succeeded=sum(task.status == TaskStatus.SUCCEEDED for task in tasks),
+            actions=self._attempt_count(goal.goal_id),
+            attempts=attempts,
+            retries=sum(max(0, count - 1) for count in review_counts.values()),
+            artifacts=len(self.repository.list_artifacts(goal.goal_id)),
+            reason=goal.failure_reason,
+        )
+
+    def _event(self, goal_id: str, event_type: str, payload: dict[str, object]) -> None:
+        self.repository.append_event(Event.create(goal_id, event_type, payload))

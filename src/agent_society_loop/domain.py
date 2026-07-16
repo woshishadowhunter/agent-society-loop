@@ -269,6 +269,19 @@ class RunBudget:
             raise ValueError("min_passing_score must be between 0 and 100")
 
 
+@dataclass(frozen=True, slots=True)
+class RunReport:
+    goal_id: str
+    status: GoalStatus
+    tasks_total: int
+    tasks_succeeded: int
+    actions: int
+    attempts: int
+    retries: int
+    artifacts: int
+    reason: str = ""
+
+
 _GOAL_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
     GoalStatus.CREATED: frozenset({GoalStatus.PLANNING}),
     GoalStatus.PLANNING: frozenset({GoalStatus.RUNNING, GoalStatus.FAILED}),
