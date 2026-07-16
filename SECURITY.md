@@ -21,4 +21,16 @@ You should receive an acknowledgement within seven days. We will validate the re
 - Run the official A2A TCK outside the runtime at a reviewed pinned revision, preserve its artifact, and import only the bounded compatibility JSON.
 - Treat TCK source revision and tool version fields as operator provenance, not cryptographic proof.
 - Run `agent-society a2a doctor` before enabling remote production traffic and `agent-society a2a self-test` after transport changes.
+- Run `agent-society scheduler self-test` after changing SQLite, claim, or recovery code.
+- Give every worker process a fresh session ID; a restarted worker must not reuse a predecessor session.
+- Renew leases before their deadline and treat `StaleClaim` as a terminal loss of local write authority.
+- Run expiry recovery with an explicit trusted UTC time and review tasks blocked for unsafe remote delegation state.
+- Keep a scheduler SQLite database on a local filesystem. WAL shared-memory coordination does not support clients on different hosts or a network filesystem.
+- Treat fencing as repository-write protection, not exactly-once execution. External services must enforce an idempotency key or fencing epoch when duplicate side effects are unacceptable.
+
+## Scheduler threat boundary
+
+The SQLite scheduler assumes one trusted host, a protected database file, and a sufficiently stable UTC clock. Worker IDs and session IDs separate process generations but are not authentication credentials. An operator or process able to modify SQLite directly remains inside the trust boundary.
+
+A stale worker can continue computing after lease expiry. It cannot commit through `commit_claim_outcome`, but a model request, tool call, filesystem write, or HTTP request performed before rejection may already have had an effect. Adapters for those systems must use their own idempotency and authorization controls.
 

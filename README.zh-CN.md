@@ -174,6 +174,21 @@ agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 
 运行时只导入 TCK 报告，不会下载或执行 TCK。源码修订号和工具版本是操作者提供的来源信息，不是签名或信任根；Bearer 值仍不会进入 SQLite。外部 TCK 流程、策略结构、doctor 检查、恢复规则和威胁边界见 [A2A 安全委派](docs/a2a.md)。
 
+## 验证调度所有权安全
+
+v0.8 补上了进入多 worker 进程之前必须具备的正确性内核：持久化 worker session、事务化任务领取、可续期租约、单调递增的 fencing token、显式过期恢复，以及原子化的 fenced outcome 提交。
+
+```bash
+agent-society scheduler self-test --json
+agent-society scheduler workers --db society.db --json
+agent-society scheduler claims --goal-id GOAL_ID --db society.db --json
+agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --json
+```
+
+自检会打开两个独立 SQLite 连接，真实验证五项不变量：同一任务只有一个有效领取者、只有精确持有者能够续租、接管后的 token 必须增大、旧 worker 晚到的结果必须零残留拒绝、当前 worker 的完整结果必须原子提交。普通任务过期后回到 `pending`；A2A 委派若停在 `submitting`、`unknown` 或 `interrupted`，任务会转为 `blocked`，避免重复远程提交；`accepted` 和 `completed` 仍可按既有证据安全恢复。
+
+`SchedulerRepository` 协议不绑定数据库，但当前 SQLite 实现只保证同一台主机上的多进程正确性。接入方式、恢复规则和威胁边界见 [调度安全文档](docs/scheduler.md)。
+
 ## 常用命令
 
 | 命令 | 用途 |
@@ -187,6 +202,10 @@ agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 | `agent-society evaluations [RUN_ID]` | 查看评测结论和逐案例结果 |
 | `agent-society promote RUN_ID --by NAME` | 显式晋级通过门禁的挑战者 |
 | `agent-society deployments` | 查看各任务类型当前冠军 |
+| `agent-society scheduler workers` | 查看 worker session 及过期状态 |
+| `agent-society scheduler claims [--goal-id ID]` | 查看租约与 fencing token 历史 |
+| `agent-society scheduler reap --at UTC` | 显式恢复过期领取 |
+| `agent-society scheduler self-test` | 验证五项本地调度安全不变量 |
 | `agent-society a2a inspect-card URL` | 检查 Agent Card 并计算摘要 |
 | `agent-society a2a register ...` | 固定卡片、接口和技能映射 |
 | `agent-society a2a agents` | 查看远端信任记录 |
@@ -235,7 +254,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.7 的调度器仍在单进程中顺序执行，SQLite 仍是单机仓库；项目不宣称已经具备分布式调度或租约安全。MCP 仍仅支持稳定版 stdio 调用。A2A 仅支持出站 `HTTP+JSON` 轮询，不包含入站服务、流式、Webhook、多轮输入/认证补充、文件/媒体、自动发现、JWS 验签、凭据获取、自动重发、回退、自动晋级、自动执行 TCK 或密码学证明验证。并发调度必须先引入带事务租约和 fencing 的仓库协议；在线学习和 Web 控制台仍属于后续工作。
+v0.8 已为共享本地 SQLite 的多进程提供租约和 fencing 安全，但内置 `LoopEngine` 仍顺序执行，也没有附带 worker daemon。SQLite WAL 不能用于跨主机或网络文件系统，因此本版本不宣称具备分布式调度能力。Fencing 只保护仓库写入；模型、工具、HTTP 和文件系统等外部副作用仍需要适配器提供幂等键或远端 epoch 校验。MCP 仍仅支持稳定版 stdio；A2A 仍仅支持出站 `HTTP+JSON` 轮询。网络安全的仓库后端、worker 服务、在线学习和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

@@ -26,6 +26,7 @@ from .domain import (
 )
 from .memory import MemoryManager
 from .ports import Planner, Reviewer, Worker, WorkerBlocked
+from .scheduler import ClaimStatus
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
 from .tools import ApprovalRequired
@@ -70,6 +71,14 @@ class LoopEngine:
             raise KeyError(f"goal not found: {goal_id}")
         if goal.status in {GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}:
             return self._report(goal)
+        if any(
+            claim.status == ClaimStatus.ACTIVE
+            for claim in self.repository.list_claims(goal.goal_id)
+        ):
+            raise RuntimeError(
+                "goal has an active scheduler claim; complete or reap it before "
+                "using the synchronous engine"
+            )
 
         if goal.status == GoalStatus.PAUSED:
             approvals = self.repository.list_approvals(goal.goal_id)

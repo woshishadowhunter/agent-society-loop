@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator, Sequence
 
 from .domain import (
     AgentProfile,
@@ -45,6 +46,13 @@ from .domain import (
     Verdict,
     WorkspaceSnapshot,
 )
+from .scheduler import (
+    ClaimStatus,
+    StaleClaim,
+    TaskClaim,
+    WorkerSession,
+    WorkerSessionRejected,
+)
 
 
 def _json_default(value: Any) -> Any:
@@ -66,9 +74,12 @@ class SQLiteRepository:
 
     def __init__(self, path: str | Path):
         self.path = str(path)
-        self.connection = sqlite3.connect(self.path)
+        self.connection = sqlite3.connect(self.path, timeout=5.0)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA busy_timeout = 5000")
+        if self.path != ":memory:":
+            self.connection.execute("PRAGMA journal_mode = WAL")
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -236,12 +247,576 @@ class SQLiteRepository:
             );
             CREATE INDEX IF NOT EXISTS policy_decisions_goal_idx
                 ON policy_decisions(goal_id, task_id, attempt_no);
+            CREATE TABLE IF NOT EXISTS scheduler_workers (
+                worker_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS task_claim_fences (
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                last_token INTEGER NOT NULL,
+                PRIMARY KEY(goal_id, task_id)
+            );
+            CREATE TABLE IF NOT EXISTS task_claims (
+                claim_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                worker_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                fencing_token INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(goal_id, task_id, fencing_token)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS task_claims_one_active_idx
+                ON task_claims(goal_id, task_id) WHERE status = 'active';
+            CREATE INDEX IF NOT EXISTS task_claims_goal_idx
+                ON task_claims(goal_id, task_id, fencing_token);
             """
         )
         self.connection.commit()
 
+    @contextmanager
+    def _immediate_transaction(self) -> Iterator[None]:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
+
     def close(self) -> None:
         self.connection.close()
+
+    def register_worker(self, session: WorkerSession) -> WorkerSession:
+        with self._immediate_transaction():
+            self.connection.execute(
+                "INSERT INTO scheduler_workers(worker_id, session_id, expires_at, payload) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(worker_id) DO UPDATE SET "
+                "session_id=excluded.session_id, expires_at=excluded.expires_at, "
+                "payload=excluded.payload",
+                (
+                    session.worker_id,
+                    session.session_id,
+                    session.expires_at,
+                    _dump(asdict(session)),
+                ),
+            )
+        return session
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        session_id: str,
+        *,
+        now: str,
+        ttl_seconds: int,
+    ) -> WorkerSession:
+        with self._immediate_transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM scheduler_workers WHERE worker_id=?", (worker_id,)
+            ).fetchone()
+            if row is None:
+                raise WorkerSessionRejected("worker session is not registered")
+            current = self._worker_from_payload(row["payload"])
+            if current.session_id != session_id:
+                raise WorkerSessionRejected("worker session has been superseded")
+            updated = current.heartbeat(now=now, ttl_seconds=ttl_seconds)
+            cursor = self.connection.execute(
+                "UPDATE scheduler_workers SET expires_at=?, payload=? "
+                "WHERE worker_id=? AND session_id=?",
+                (updated.expires_at, _dump(asdict(updated)), worker_id, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise WorkerSessionRejected("worker session has been superseded")
+        return updated
+
+    @staticmethod
+    def _worker_from_payload(payload: str) -> WorkerSession:
+        data = _load(payload)
+        data["capabilities"] = tuple(data["capabilities"])
+        return WorkerSession(**data)
+
+    def get_worker(self, worker_id: str) -> WorkerSession | None:
+        row = self.connection.execute(
+            "SELECT payload FROM scheduler_workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        return None if row is None else self._worker_from_payload(row["payload"])
+
+    def list_workers(self) -> list[WorkerSession]:
+        rows = self.connection.execute(
+            "SELECT payload FROM scheduler_workers ORDER BY worker_id"
+        ).fetchall()
+        return [self._worker_from_payload(row["payload"]) for row in rows]
+
+    def _require_worker_session_locked(
+        self, worker_id: str, session_id: str, now: str
+    ) -> WorkerSession:
+        row = self.connection.execute(
+            "SELECT payload FROM scheduler_workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        if row is None:
+            raise WorkerSessionRejected("worker session is not registered")
+        session = self._worker_from_payload(row["payload"])
+        if session.session_id != session_id:
+            raise WorkerSessionRejected("worker session has been superseded")
+        if session.is_expired(now):
+            raise WorkerSessionRejected("worker session has expired")
+        return session
+
+    @staticmethod
+    def _task_from_payload(payload: str) -> Task:
+        data = _load(payload)
+        data["dependencies"] = tuple(data["dependencies"])
+        data["status"] = TaskStatus(data["status"])
+        return Task(**data)
+
+    @staticmethod
+    def _claim_from_payload(payload: str) -> TaskClaim:
+        data = _load(payload)
+        data["status"] = ClaimStatus(data["status"])
+        return TaskClaim(**data)
+
+    def claim_task(
+        self,
+        goal_id: str,
+        task_id: str,
+        worker_id: str,
+        session_id: str,
+        agent_id: str,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> TaskClaim | None:
+        with self._immediate_transaction():
+            session = self._require_worker_session_locked(worker_id, session_id, now)
+            goal_row = self.connection.execute(
+                "SELECT payload FROM goals WHERE goal_id=?", (goal_id,)
+            ).fetchone()
+            if goal_row is None or GoalStatus(_load(goal_row["payload"])["status"]) != GoalStatus.RUNNING:
+                return None
+
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                (goal_id, task_id),
+            ).fetchone()
+            if task_row is None:
+                return None
+            task = self._task_from_payload(task_row["payload"])
+            if task.status != TaskStatus.PENDING:
+                return None
+
+            for dependency_id in task.dependencies:
+                dependency_row = self.connection.execute(
+                    "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                    (goal_id, dependency_id),
+                ).fetchone()
+                if dependency_row is None:
+                    return None
+                dependency = self._task_from_payload(dependency_row["payload"])
+                if dependency.status != TaskStatus.SUCCEEDED:
+                    return None
+
+            active = self.connection.execute(
+                "SELECT payload FROM task_claims "
+                "WHERE goal_id=? AND task_id=? AND status='active'",
+                (goal_id, task_id),
+            ).fetchone()
+            if active is not None:
+                return None
+
+            fence_row = self.connection.execute(
+                "SELECT last_token FROM task_claim_fences WHERE goal_id=? AND task_id=?",
+                (goal_id, task_id),
+            ).fetchone()
+            fencing_token = 1 if fence_row is None else int(fence_row["last_token"]) + 1
+            self.connection.execute(
+                "INSERT INTO task_claim_fences(goal_id, task_id, last_token) VALUES (?, ?, ?) "
+                "ON CONFLICT(goal_id, task_id) DO UPDATE SET last_token=excluded.last_token",
+                (goal_id, task_id, fencing_token),
+            )
+            claim = TaskClaim.create(
+                goal_id,
+                task_id,
+                session,
+                agent_id,
+                fencing_token,
+                now=now,
+                lease_seconds=lease_seconds,
+            )
+            running = replace(
+                task, status=TaskStatus.RUNNING, assigned_agent_id=agent_id
+            )
+            self.connection.execute(
+                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                (_dump(asdict(running)), goal_id, task_id),
+            )
+            self.connection.execute(
+                "INSERT INTO task_claims(claim_id, goal_id, task_id, worker_id, "
+                "session_id, fencing_token, status, expires_at, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    claim.claim_id,
+                    claim.goal_id,
+                    claim.task_id,
+                    claim.worker_id,
+                    claim.session_id,
+                    claim.fencing_token,
+                    claim.status.value,
+                    claim.expires_at,
+                    _dump(asdict(claim)),
+                ),
+            )
+        return claim
+
+    def _require_claim_locked(
+        self,
+        claim_id: str,
+        worker_id: str,
+        session_id: str,
+        fencing_token: int,
+        now: str,
+    ) -> TaskClaim:
+        row = self.connection.execute(
+            "SELECT payload FROM task_claims WHERE claim_id=?", (claim_id,)
+        ).fetchone()
+        if row is None:
+            raise StaleClaim("claim identity no longer owns task")
+        claim = self._claim_from_payload(row["payload"])
+        if (
+            claim.status != ClaimStatus.ACTIVE
+            or claim.worker_id != worker_id
+            or claim.session_id != session_id
+            or claim.fencing_token != fencing_token
+        ):
+            raise StaleClaim("claim identity no longer owns task")
+        if claim.is_expired(now):
+            raise StaleClaim("claim lease has expired")
+        return claim
+
+    def renew_claim(
+        self,
+        claim_id: str,
+        worker_id: str,
+        session_id: str,
+        fencing_token: int,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> TaskClaim:
+        with self._immediate_transaction():
+            self._require_worker_session_locked(worker_id, session_id, now)
+            current = self._require_claim_locked(
+                claim_id, worker_id, session_id, fencing_token, now
+            )
+            renewed = current.renew(now=now, lease_seconds=lease_seconds)
+            cursor = self.connection.execute(
+                "UPDATE task_claims SET expires_at=?, payload=? "
+                "WHERE claim_id=? AND status='active' AND fencing_token=?",
+                (
+                    renewed.expires_at,
+                    _dump(asdict(renewed)),
+                    claim_id,
+                    fencing_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise StaleClaim("claim identity no longer owns task")
+        return renewed
+
+    def release_claim(
+        self,
+        claim_id: str,
+        worker_id: str,
+        session_id: str,
+        fencing_token: int,
+        *,
+        now: str,
+        reason: str = "",
+    ) -> TaskClaim:
+        with self._immediate_transaction():
+            self._require_worker_session_locked(worker_id, session_id, now)
+            current = self._require_claim_locked(
+                claim_id, worker_id, session_id, fencing_token, now
+            )
+            released = current.finish(ClaimStatus.RELEASED, now=now, reason=reason)
+            self.connection.execute(
+                "UPDATE task_claims SET status=?, expires_at=?, payload=? WHERE claim_id=?",
+                (
+                    released.status.value,
+                    released.expires_at,
+                    _dump(asdict(released)),
+                    claim_id,
+                ),
+            )
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                (released.goal_id, released.task_id),
+            ).fetchone()
+            if task_row is not None:
+                task = self._task_from_payload(task_row["payload"])
+                if task.status == TaskStatus.RUNNING:
+                    pending = replace(
+                        task, status=TaskStatus.PENDING, assigned_agent_id=None
+                    )
+                    self.connection.execute(
+                        "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                        (_dump(asdict(pending)), task.goal_id, task.task_id),
+                    )
+        return released
+
+    def get_claim(self, claim_id: str) -> TaskClaim | None:
+        row = self.connection.execute(
+            "SELECT payload FROM task_claims WHERE claim_id=?", (claim_id,)
+        ).fetchone()
+        return None if row is None else self._claim_from_payload(row["payload"])
+
+    def list_claims(self, goal_id: str | None = None) -> list[TaskClaim]:
+        query = "SELECT payload FROM task_claims"
+        parameters: tuple[str, ...] = ()
+        if goal_id is not None:
+            query += " WHERE goal_id=?"
+            parameters = (goal_id,)
+        query += " ORDER BY goal_id, task_id, fencing_token"
+        rows = self.connection.execute(query, parameters).fetchall()
+        return [self._claim_from_payload(row["payload"]) for row in rows]
+
+    def reap_expired_claims(self, *, now: str) -> list[TaskClaim]:
+        expired_claims: list[TaskClaim] = []
+        unsafe_remote_states = {
+            DelegationStatus.SUBMITTING,
+            DelegationStatus.UNKNOWN,
+            DelegationStatus.INTERRUPTED,
+        }
+        with self._immediate_transaction():
+            rows = self.connection.execute(
+                "SELECT payload FROM task_claims WHERE status='active' "
+                "ORDER BY goal_id, task_id, fencing_token"
+            ).fetchall()
+            for row in rows:
+                claim = self._claim_from_payload(row["payload"])
+                if not claim.is_expired(now):
+                    continue
+
+                delegation_row = self.connection.execute(
+                    "SELECT payload FROM delegations WHERE goal_id=? AND task_id=? "
+                    "ORDER BY rowid DESC LIMIT 1",
+                    (claim.goal_id, claim.task_id),
+                ).fetchone()
+                delegation = (
+                    _delegation_from_payload(delegation_row["payload"])
+                    if delegation_row is not None
+                    else None
+                )
+                unsafe = (
+                    delegation is not None
+                    and delegation.status in unsafe_remote_states
+                )
+                reason = (
+                    f"unsafe remote delegation state: {delegation.status.value}"
+                    if unsafe and delegation is not None
+                    else "lease expired"
+                )
+                expired = claim.finish(
+                    ClaimStatus.EXPIRED, now=now, reason=reason
+                )
+                self.connection.execute(
+                    "UPDATE task_claims SET status=?, payload=? "
+                    "WHERE claim_id=? AND status='active'",
+                    (expired.status.value, _dump(asdict(expired)), claim.claim_id),
+                )
+
+                task_row = self.connection.execute(
+                    "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                    (claim.goal_id, claim.task_id),
+                ).fetchone()
+                if task_row is not None:
+                    task = self._task_from_payload(task_row["payload"])
+                    if task.status == TaskStatus.RUNNING:
+                        recovered = replace(
+                            task,
+                            status=(
+                                TaskStatus.BLOCKED if unsafe else TaskStatus.PENDING
+                            ),
+                            assigned_agent_id=None,
+                        )
+                        self.connection.execute(
+                            "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                            (_dump(asdict(recovered)), task.goal_id, task.task_id),
+                        )
+
+                event = Event.create(
+                    claim.goal_id,
+                    "task.claim_expired",
+                    {
+                        "claim_id": claim.claim_id,
+                        "task_id": claim.task_id,
+                        "worker_id": claim.worker_id,
+                        "fencing_token": claim.fencing_token,
+                        "recovery": "blocked" if unsafe else "pending",
+                        "reason": reason,
+                    },
+                )
+                self.connection.execute(
+                    "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                    (event.event_id, event.goal_id, _dump(asdict(event))),
+                )
+                expired_claims.append(expired)
+        return expired_claims
+
+    def commit_claim_outcome(
+        self,
+        claim: TaskClaim,
+        task: Task,
+        artifact: Artifact | None,
+        attempt: Attempt,
+        review: Review,
+        performance: PerformanceRecord,
+        events: Sequence[Event],
+        *,
+        now: str,
+    ) -> TaskClaim:
+        with self._immediate_transaction():
+            self._require_worker_session_locked(
+                claim.worker_id, claim.session_id, now
+            )
+            current = self._require_claim_locked(
+                claim.claim_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                now,
+            )
+            if (
+                task.goal_id != current.goal_id
+                or task.task_id != current.task_id
+                or task.status
+                not in {
+                    TaskStatus.PENDING,
+                    TaskStatus.SUCCEEDED,
+                    TaskStatus.FAILED,
+                    TaskStatus.BLOCKED,
+                }
+                or attempt.goal_id != current.goal_id
+                or attempt.task_id != current.task_id
+                or attempt.agent_id != current.agent_id
+                or review.goal_id != current.goal_id
+                or review.task_id != current.task_id
+                or review.review_id != attempt.review_id
+                or review.attempt_no != attempt.attempt_no
+                or performance.agent_id != current.agent_id
+                or performance.task_type != task.task_type
+            ):
+                raise ValueError("outcome identity does not match active claim")
+            if task.status == TaskStatus.SUCCEEDED and (
+                artifact is None or review.verdict != Verdict.PASS
+            ):
+                raise ValueError(
+                    "succeeded task requires a passing review and artifact"
+                )
+            if artifact is None:
+                if attempt.artifact_id is not None or task.artifact_id is not None:
+                    raise ValueError("outcome artifact identity is inconsistent")
+            elif (
+                artifact.goal_id != current.goal_id
+                or artifact.task_id != current.task_id
+                or artifact.agent_id != current.agent_id
+                or attempt.artifact_id != artifact.artifact_id
+                or (
+                    task.status == TaskStatus.SUCCEEDED
+                    and task.artifact_id != artifact.artifact_id
+                )
+                or (
+                    task.status != TaskStatus.SUCCEEDED
+                    and task.artifact_id not in {None, artifact.artifact_id}
+                )
+            ):
+                raise ValueError("outcome artifact identity does not match active claim")
+            if any(event.goal_id != current.goal_id for event in events):
+                raise ValueError("outcome event belongs to another goal")
+
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                (current.goal_id, current.task_id),
+            ).fetchone()
+            if task_row is None:
+                raise StaleClaim("claimed task no longer exists")
+            durable_task = self._task_from_payload(task_row["payload"])
+            if (
+                durable_task.status != TaskStatus.RUNNING
+                or durable_task.assigned_agent_id != current.agent_id
+            ):
+                raise StaleClaim("claim identity no longer owns task")
+
+            if artifact is not None:
+                self.connection.execute(
+                    "INSERT INTO artifacts(artifact_id, goal_id, task_id, payload) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        artifact.artifact_id,
+                        artifact.goal_id,
+                        artifact.task_id,
+                        _dump(asdict(artifact)),
+                    ),
+                )
+            self.connection.execute(
+                "INSERT INTO attempts(attempt_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    attempt.attempt_id,
+                    attempt.goal_id,
+                    attempt.task_id,
+                    attempt.attempt_no,
+                    _dump(asdict(attempt)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    review.review_id,
+                    review.goal_id,
+                    review.task_id,
+                    review.attempt_no,
+                    _dump(asdict(review)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO performance(agent_id, task_type, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(agent_id, task_type) DO UPDATE SET payload=excluded.payload",
+                (
+                    performance.agent_id,
+                    performance.task_type,
+                    _dump(asdict(performance)),
+                ),
+            )
+            for event in events:
+                self.connection.execute(
+                    "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                    (event.event_id, event.goal_id, _dump(asdict(event))),
+                )
+            self.connection.execute(
+                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                (_dump(asdict(task)), task.goal_id, task.task_id),
+            )
+            committed = current.finish(ClaimStatus.COMMITTED, now=now)
+            self.connection.execute(
+                "UPDATE task_claims SET status=?, payload=? "
+                "WHERE claim_id=? AND status='active' AND fencing_token=?",
+                (
+                    committed.status.value,
+                    _dump(asdict(committed)),
+                    committed.claim_id,
+                    committed.fencing_token,
+                ),
+            )
+        return committed
 
     def save_goal(self, goal: Goal) -> None:
         self.connection.execute(
@@ -261,9 +836,26 @@ class SQLiteRepository:
         data["status"] = GoalStatus(data["status"])
         return Goal(**data)
 
+    def _reject_legacy_claimed_write_locked(
+        self, goal_id: str, task_id: str
+    ) -> None:
+        row = self.connection.execute(
+            "SELECT 1 FROM task_claims "
+            "WHERE goal_id=? AND task_id=? AND status='active'",
+            (goal_id, task_id),
+        ).fetchone()
+        if row is not None:
+            raise StaleClaim(
+                "active scheduler claim requires a fenced outcome mutation"
+            )
+
     def save_tasks(self, tasks: Iterable[Task]) -> None:
-        with self.connection:
-            for task in tasks:
+        values = list(tasks)
+        with self._immediate_transaction():
+            for task in values:
+                self._reject_legacy_claimed_write_locked(
+                    task.goal_id, task.task_id
+                )
                 self.connection.execute(
                     "INSERT INTO tasks(task_id, goal_id, position, payload) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT(goal_id, task_id) DO UPDATE SET "
@@ -288,11 +880,20 @@ class SQLiteRepository:
         return tasks
 
     def save_artifact(self, artifact: Artifact) -> None:
-        self.connection.execute(
-            "INSERT INTO artifacts(artifact_id, goal_id, task_id, payload) VALUES (?, ?, ?, ?)",
-            (artifact.artifact_id, artifact.goal_id, artifact.task_id, _dump(asdict(artifact))),
-        )
-        self.connection.commit()
+        with self._immediate_transaction():
+            self._reject_legacy_claimed_write_locked(
+                artifact.goal_id, artifact.task_id
+            )
+            self.connection.execute(
+                "INSERT INTO artifacts(artifact_id, goal_id, task_id, payload) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    artifact.artifact_id,
+                    artifact.goal_id,
+                    artifact.task_id,
+                    _dump(asdict(artifact)),
+                ),
+            )
 
     def list_artifacts(self, goal_id: str, task_id: str | None = None) -> list[Artifact]:
         if task_id is None:
@@ -307,18 +908,21 @@ class SQLiteRepository:
         return [Artifact(**_load(row["payload"])) for row in rows]
 
     def save_review(self, review: Review) -> None:
-        self.connection.execute(
-            "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                review.review_id,
-                review.goal_id,
-                review.task_id,
-                review.attempt_no,
-                _dump(asdict(review)),
-            ),
-        )
-        self.connection.commit()
+        with self._immediate_transaction():
+            self._reject_legacy_claimed_write_locked(
+                review.goal_id, review.task_id
+            )
+            self.connection.execute(
+                "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    review.review_id,
+                    review.goal_id,
+                    review.task_id,
+                    review.attempt_no,
+                    _dump(asdict(review)),
+                ),
+            )
 
     def list_reviews(self, goal_id: str, task_id: str | None = None) -> list[Review]:
         query = "SELECT payload FROM reviews WHERE goal_id=?"
@@ -354,7 +958,10 @@ class SQLiteRepository:
         event: Event,
     ) -> None:
         """Commit the reviewed outcome and its audit evidence as one unit."""
-        with self.connection:
+        with self._immediate_transaction():
+            self._reject_legacy_claimed_write_locked(
+                attempt.goal_id, attempt.task_id
+            )
             self.connection.execute(
                 "INSERT INTO attempts(attempt_id, goal_id, task_id, attempt_no, payload) "
                 "VALUES (?, ?, ?, ?, ?)",

@@ -126,6 +126,21 @@ Policy decisions are persisted before payload construction and network I/O. Poli
 
 The runtime imports but never downloads or executes the TCK. The source revision and tool version are operator-supplied provenance, not a signature or trust root. Bearer values remain outside SQLite. See [Guarded A2A delegation](docs/a2a.md) for the external TCK procedure, policy schema, doctor checks, recovery rules, and threat boundary.
 
+## Prove scheduler ownership safety
+
+Version 0.8 adds the correctness kernel required before execution can move to multiple worker processes: durable worker sessions, transactional task claims, renewable leases, monotonic fencing tokens, explicit expiry recovery, and atomic fenced outcome commits.
+
+```bash
+agent-society scheduler self-test --json
+agent-society scheduler workers --db society.db --json
+agent-society scheduler claims --goal-id GOAL_ID --db society.db --json
+agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --json
+```
+
+The self-test opens two independent SQLite connections and proves five invariants: exclusive claim, exact-owner renewal, increasing token after takeover, zero-partial-write rejection of a stale worker, and complete commit by the current worker. Expiry recovery returns ordinary work to `pending`; an A2A delegation in `submitting`, `unknown`, or `interrupted` blocks instead of risking a duplicate remote submission. Accepted and completed A2A work remains resumable.
+
+The `SchedulerRepository` protocol is backend-neutral, but the bundled implementation is deliberately limited to multiple processes on one host. See [Scheduler safety](docs/scheduler.md) for integration, recovery, and threat boundaries.
+
 ## Architecture
 
 ```mermaid
@@ -187,6 +202,10 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society evaluations [RUN_ID]` | Inspect evaluation decisions and raw case outcomes |
 | `agent-society promote RUN_ID --by NAME` | Explicitly promote a recommended challenger |
 | `agent-society deployments` | Inspect active task-type champions |
+| `agent-society scheduler workers` | Inspect durable worker sessions and expiry |
+| `agent-society scheduler claims [--goal-id ID]` | Inspect lease and fencing-token history |
+| `agent-society scheduler reap --at UTC` | Explicitly recover expired claims |
+| `agent-society scheduler self-test` | Prove five local scheduler safety invariants |
 | `agent-society a2a inspect-card URL` | Inspect and hash a bounded Agent Card |
 | `agent-society a2a register ...` | Register an exact card, interface, and skill map |
 | `agent-society a2a agents` | Inspect remote trust records |
@@ -240,7 +259,7 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.7 still runs the orchestrator sequentially in one process and uses SQLite as a single-host repository; it does not claim distributed scheduling or lease safety. MCP support remains limited to stable stdio calls. A2A remains outbound `HTTP+JSON` polling only: no inbound server, streaming, webhooks, multi-turn input/auth exchange, file/media parts, automatic discovery, JWS verification, credential acquisition, automatic resend, fallback, promotion, TCK execution, or cryptographic attestation verification. Concurrent scheduling first requires a transactional repository protocol with leases and fencing; online learning and a web console remain future work.
+Version 0.8 provides lease and fencing safety for multiple processes sharing a local SQLite database, but the bundled `LoopEngine` still executes sequentially and no worker daemon is included. SQLite WAL is not supported across hosts or network filesystems, so this release does not claim distributed scheduling. Fencing protects repository writes; external model, tool, HTTP, and filesystem side effects still require adapter-level idempotency or a remote epoch check. MCP remains stable stdio only. A2A remains outbound `HTTP+JSON` polling only, without inbound service, streaming, webhooks, file/media parts, automatic discovery, credential acquisition, automatic resend, fallback, promotion, TCK execution, or cryptographic attestation verification. A network-safe repository adapter and worker service remain future work.
 
 ## Development
 

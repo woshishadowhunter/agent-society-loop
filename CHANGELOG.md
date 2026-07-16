@@ -2,6 +2,19 @@
 
 All notable changes are documented here.
 
+## 0.8.0 - 2026-07-16
+
+- Added backend-neutral `SchedulerRepository` contracts for durable worker sessions, task claims, renewal, release, expiry recovery, and fenced outcome commits.
+- Added a single-host, multi-process SQLite implementation using short immediate transactions, WAL, a one-active-claim index, and monotonic task-local fencing tokens.
+- Added process-generation protection: a new worker session supersedes the old session, whose heartbeat and claim mutations fail closed.
+- Added atomic outcome persistence covering optional artifact, review, attempt, performance, events, final task state, and committed claim state.
+- Added explicit expiry recovery that blocks ambiguous/interrupted A2A work while preserving accepted/completed no-resend recovery.
+- Added scheduler worker/claim inspection, explicit reap, and a deterministic two-connection five-invariant safety campaign.
+- Added a synchronous-engine guard that refuses to recover a task while an active scheduler claim owns it.
+- Closed legacy per-task write paths while a claim is active, requiring scheduler-managed outcomes to use the fenced atomic commit.
+- Added outcome consistency validation so a succeeded task requires both an artifact and a passing review.
+- Preserved v0.7 database compatibility and documented the exact same-host, non-exactly-once external-side-effect boundary.
+
 ## 0.7.0 - 2026-07-16
 
 - Added strict, content-addressed delegation policy with exact agent/card/task domains, context allowlists, resource ceilings, and required evidence freshness.
