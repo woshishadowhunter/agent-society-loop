@@ -1,0 +1,59 @@
+{
+  "task_type": "analysis",
+  "champion": {
+    "agent_id": "analysis-champion",
+    "model_id": "model-a"
+  },
+  "challenger": {
+    "agent_id": "analysis-challenger",
+    "model_id": "model-b"
+  },
+  "cases": [
+    {
+      "case_id": "evidence-1",
+      "input": {"prompt": "Summarize the supplied evidence."},
+      "acceptance_criteria": {"minimum_score": 70, "requires_citations": true},
+      "critical": true,
+      "results": {
+        "analysis-champion": {"passed": true, "score": 80, "duration_ms": 120},
+        "analysis-challenger": {"passed": true, "score": 84, "duration_ms": 130}
+      }
+    },
+    {
+      "case_id": "evidence-2",
+      "input": {"prompt": "Compare two competing claims."},
+      "acceptance_criteria": {"minimum_score": 70},
+      "results": {
+        "analysis-champion": {"passed": true, "score": 79, "duration_ms": 110},
+        "analysis-challenger": {"passed": true, "score": 83, "duration_ms": 125}
+      }
+    },
+    {
+      "case_id": "evidence-3",
+      "input": {"prompt": "Identify unsupported conclusions."},
+      "acceptance_criteria": {"minimum_score": 70},
+      "results": {
+        "analysis-champion": {"passed": true, "score": 81, "duration_ms": 115},
+        "analysis-challenger": {"passed": true, "score": 85, "duration_ms": 128}
+      }
+    },
+    {
+      "case_id": "evidence-4",
+      "input": {"prompt": "Produce a bounded recommendation."},
+      "acceptance_criteria": {"minimum_score": 70},
+      "results": {
+        "analysis-champion": {"passed": true, "score": 82, "duration_ms": 118},
+        "analysis-challenger": {"passed": true, "score": 86, "duration_ms": 132}
+      }
+    },
+    {
+      "case_id": "evidence-5",
+      "input": {"prompt": "State uncertainty and missing data."},
+      "acceptance_criteria": {"minimum_score": 70},
+      "results": {
+        "analysis-champion": {"passed": true, "score": 78, "duration_ms": 108},
+        "analysis-challenger": {"passed": true, "score": 82, "duration_ms": 122}
+      }
+    }
+  ]
+}

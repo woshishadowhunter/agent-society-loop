@@ -49,7 +49,7 @@ agent-society agents --db demo.db --json
 flowchart LR
     G[目标生命周期] --> O[规划与调度 / 外循环]
     O --> P[目标拆解]
-    O --> S[按绩效选择专家]
+    O --> S[部署门禁 / 绩效选人]
     S --> W[执行专家]
     W --> R[质量审查 / 内循环]
     R -->|不通过：结构化缺陷| W
@@ -124,6 +124,21 @@ agent-society maintain owner/repository 123 \
 
 发布拥有独立的精确审批，包含基线 HEAD、分支策略、变更路径、工作区摘要、检查、标题和最终 PR 正文。系统只暂存目标拥有的路径，并通过提交、推送、创建 PR 的持久状态机幂等恢复；永远不会合并或强制推送。
 
+## 评测并晋级智能体
+
+v0.5 增加了可复现的冠军/挑战者门禁。评测会逐案例保存原始结果并给出推荐，但不会改变生产路由；晋级必须由操作者单独执行：
+
+```bash
+agent-society evaluate examples/evaluation-spec.json --db evolution.db --json
+agent-society evaluations RUN_ID --db evolution.db --json
+agent-society promote RUN_ID --by operator --db evolution.db --json
+agent-society deployments --db evolution.db --json
+```
+
+默认策略要求至少 5 个案例、关键案例零失败、通过率不下降、平均分至少提升 2 分、单案例退化不超过 10 分，且 p95 延迟不超过冠军的 1.5 倍。晋级时会重新核对 Agent 与模型身份。某任务类型启用部署后，只允许已批准的冠军执行；冠军不可用时目标会阻塞，不会偷偷回退。详见[评测与晋级](docs/evaluation.md)。
+
+外部工具可以通过稳定版 MCP `2025-11-25` stdio 服务接入。发现工具不等于获得权限：只有操作者提供本地风险分类的工具才会注册，适配后的调用仍经过参数校验、审批、Trace 和动作预算。详见 [MCP 工具接入](docs/mcp.md)。
+
 ## 常用命令
 
 | 命令 | 用途 |
@@ -133,6 +148,10 @@ agent-society maintain owner/repository 123 \
 | `agent-society status GOAL_ID` | 查看目标、任务、质检和产物 |
 | `agent-society events GOAL_ID` | 查看有序审计事件 |
 | `agent-society agents` | 查看 Agent 档案和绩效 |
+| `agent-society evaluate SPEC.json` | 用可复现 benchmark 比较挑战者 |
+| `agent-society evaluations [RUN_ID]` | 查看评测结论和逐案例结果 |
+| `agent-society promote RUN_ID --by NAME` | 显式晋级通过门禁的挑战者 |
+| `agent-society deployments` | 查看各任务类型当前冠军 |
 | `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
 | `agent-society maintain ... --apply --check NAME=COMMAND` | 应用获批的本地修改并运行获批的命名检查 |
 | `agent-society maintain ... --publish` | 将已验证的合规分支发布为获批 Pull Request |
@@ -165,13 +184,13 @@ provider = OpenAICompatibleProvider(
 
 ## “自进化”的准确含义
 
-每次经过质检的执行都会更新 `(agent_id, task_type)` 绩效，包括通过率、平均得分、耗时和近期结果。下一次分配同类型任务时，选择器综合这些数据，并把评分明细记录到事件日志。
+每次经过质检的执行都会更新 `(agent_id, task_type)` 绩效，包括通过率、平均得分、耗时和近期结果。没有 active deployment 的任务类型继续按这些数据选人；Agent 升级还可以通过不可变 benchmark 比较，并经显式冠军/挑战者门禁晋级。
 
 运行时永远不会自行批准修改，也不会改写提示词、验收标准或安全规则。受控维护只能根据精确且持久化的审批修改指定工作区，避免一次低质量结果反过来降低质量标准。
 
 ## 当前边界
 
-v0.4 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。系统不能删除或重命名文件、安装依赖、合并、强制推送或修改分支保护。分布式队列、并发调度、MCP/A2A 适配器、冠军/挑战者评估和 Web 控制台仍属于后续工作。
+v0.5 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。MCP 仅支持稳定版 stdio 工具发现与调用，不包含 HTTP transport、resources、sampling、elicitation 或实验性 tasks。系统不能删除或重命名文件、安装依赖、合并、强制推送或修改分支保护。分布式 worker、A2A 委派、并发调度、在线学习和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

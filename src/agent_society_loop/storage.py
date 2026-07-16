@@ -16,7 +16,11 @@ from .domain import (
     Artifact,
     Attempt,
     Defect,
+    DeploymentRecord,
     Event,
+    EvaluationOutcome,
+    EvaluationRun,
+    EvaluationStatus,
     Goal,
     GoalStatus,
     KnowledgeItem,
@@ -151,6 +155,28 @@ class SQLiteRepository:
                 goal_id TEXT PRIMARY KEY,
                 publication_id TEXT UNIQUE NOT NULL,
                 payload_digest TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS evaluation_runs (
+                run_id TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS evaluation_runs_task_type_idx
+                ON evaluation_runs(task_type);
+            CREATE TABLE IF NOT EXISTS evaluation_outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                case_id TEXT NOT NULL,
+                candidate_agent_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(run_id, case_id, candidate_agent_id)
+            );
+            CREATE INDEX IF NOT EXISTS evaluation_outcomes_run_idx
+                ON evaluation_outcomes(run_id, case_id);
+            CREATE TABLE IF NOT EXISTS deployments (
+                task_type TEXT PRIMARY KEY,
+                source_run_id TEXT UNIQUE NOT NULL,
                 payload TEXT NOT NULL
             );
             """
@@ -344,6 +370,16 @@ class SQLiteRepository:
             data["task_types"] = tuple(data["task_types"])
             result.append(AgentProfile(**data))
         return result
+
+    def get_agent(self, agent_id: str) -> AgentProfile | None:
+        row = self.connection.execute(
+            "SELECT payload FROM agents WHERE agent_id=?", (agent_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = _load(row["payload"])
+        data["task_types"] = tuple(data["task_types"])
+        return AgentProfile(**data)
 
     def save_performance(self, performance: PerformanceRecord) -> None:
         self.connection.execute(
@@ -572,3 +608,139 @@ class SQLiteRepository:
         data["changed_paths"] = tuple(data["changed_paths"])
         data["check_names"] = tuple(data["check_names"])
         return PublicationRecord(**data)
+
+    def save_evaluation_outcome(self, outcome: EvaluationOutcome) -> None:
+        self.connection.execute(
+            "INSERT INTO evaluation_outcomes("
+            "outcome_id, run_id, case_id, candidate_agent_id, payload"
+            ") VALUES (?, ?, ?, ?, ?)",
+            (
+                outcome.outcome_id,
+                outcome.run_id,
+                outcome.case_id,
+                outcome.candidate_agent_id,
+                _dump(asdict(outcome)),
+            ),
+        )
+        self.connection.commit()
+
+    def list_evaluation_outcomes(self, run_id: str) -> list[EvaluationOutcome]:
+        rows = self.connection.execute(
+            "SELECT payload FROM evaluation_outcomes "
+            "WHERE run_id=? ORDER BY rowid",
+            (run_id,),
+        ).fetchall()
+        return [EvaluationOutcome(**_load(row["payload"])) for row in rows]
+
+    def save_evaluation_run(self, run: EvaluationRun) -> None:
+        existing = self.get_evaluation_run(run.run_id)
+        if existing is not None:
+            immutable = (
+                "task_type",
+                "benchmark_digest",
+                "champion_agent_id",
+                "champion_model_id",
+                "challenger_agent_id",
+                "challenger_model_id",
+                "case_count",
+                "metrics",
+                "recommended",
+                "failed_gates",
+                "created_at",
+            )
+            if any(getattr(existing, name) != getattr(run, name) for name in immutable):
+                raise ValueError("evaluation identity and results cannot change")
+            if (
+                existing.status == EvaluationStatus.PROMOTED
+                and run.status != EvaluationStatus.PROMOTED
+            ):
+                raise ValueError("evaluation status cannot move backwards")
+        self.connection.execute(
+            "INSERT INTO evaluation_runs(run_id, task_type, payload) VALUES (?, ?, ?) "
+            "ON CONFLICT(run_id) DO UPDATE SET payload=excluded.payload",
+            (run.run_id, run.task_type, _dump(asdict(run))),
+        )
+        self.connection.commit()
+
+    def get_evaluation_run(self, run_id: str) -> EvaluationRun | None:
+        row = self.connection.execute(
+            "SELECT payload FROM evaluation_runs WHERE run_id=?", (run_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return _evaluation_run_from_payload(row["payload"])
+
+    def list_evaluation_runs(self, task_type: str | None = None) -> list[EvaluationRun]:
+        if task_type is None:
+            rows = self.connection.execute(
+                "SELECT payload FROM evaluation_runs ORDER BY rowid"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT payload FROM evaluation_runs WHERE task_type=? ORDER BY rowid",
+                (task_type,),
+            ).fetchall()
+        return [_evaluation_run_from_payload(row["payload"]) for row in rows]
+
+    def get_deployment(self, task_type: str) -> DeploymentRecord | None:
+        row = self.connection.execute(
+            "SELECT payload FROM deployments WHERE task_type=?", (task_type,)
+        ).fetchone()
+        return DeploymentRecord(**_load(row["payload"])) if row is not None else None
+
+    def list_deployments(self) -> list[DeploymentRecord]:
+        rows = self.connection.execute(
+            "SELECT payload FROM deployments ORDER BY task_type"
+        ).fetchall()
+        return [DeploymentRecord(**_load(row["payload"])) for row in rows]
+
+    def promote_evaluation(self, run_id: str, promoted_by: str) -> DeploymentRecord:
+        run = self.get_evaluation_run(run_id)
+        if run is None:
+            raise KeyError(f"evaluation run not found: {run_id}")
+        promoted = run.promote(promoted_by)
+        candidate = self.get_agent(run.challenger_agent_id)
+        if (
+            candidate is None
+            or not candidate.enabled
+            or candidate.model_id != run.challenger_model_id
+            or candidate.role != "worker"
+            or not ("*" in candidate.task_types or run.task_type in candidate.task_types)
+        ):
+            raise ValueError("challenger identity no longer matches an eligible agent")
+        active = self.get_deployment(run.task_type)
+        if active is not None and (
+            active.champion_agent_id != run.champion_agent_id
+            or active.champion_model_id != run.champion_model_id
+        ):
+            raise ValueError("evaluation has a stale champion identity")
+        deployment = DeploymentRecord(
+            task_type=run.task_type,
+            champion_agent_id=run.challenger_agent_id,
+            champion_model_id=run.challenger_model_id,
+            source_run_id=run.run_id,
+            promoted_by=promoted_by.strip(),
+        )
+        with self.connection:
+            self.connection.execute(
+                "UPDATE evaluation_runs SET payload=? WHERE run_id=?",
+                (_dump(asdict(promoted)), run.run_id),
+            )
+            self.connection.execute(
+                "INSERT INTO deployments(task_type, source_run_id, payload) "
+                "VALUES (?, ?, ?) ON CONFLICT(task_type) DO UPDATE SET "
+                "source_run_id=excluded.source_run_id, payload=excluded.payload",
+                (
+                    deployment.task_type,
+                    deployment.source_run_id,
+                    _dump(asdict(deployment)),
+                ),
+            )
+        return deployment
+
+
+def _evaluation_run_from_payload(payload: str) -> EvaluationRun:
+    data = _load(payload)
+    data["status"] = EvaluationStatus(data["status"])
+    data["failed_gates"] = tuple(data["failed_gates"])
+    return EvaluationRun(**data)

@@ -3,6 +3,14 @@
 from .domain import (
     ApprovalRequest,
     ApprovalStatus,
+    BenchmarkCase,
+    CandidateExecution,
+    CandidateIdentity,
+    CaseEvaluation,
+    DeploymentRecord,
+    EvaluationOutcome,
+    EvaluationRun,
+    EvaluationStatus,
     Goal,
     GoalStatus,
     PublicationRecord,
@@ -21,6 +29,14 @@ from .domain import (
 __all__ = [
     "ApprovalRequest",
     "ApprovalStatus",
+    "BenchmarkCase",
+    "CandidateExecution",
+    "CandidateIdentity",
+    "CaseEvaluation",
+    "DeploymentRecord",
+    "EvaluationOutcome",
+    "EvaluationRun",
+    "EvaluationStatus",
     "Goal",
     "GoalStatus",
     "PublicationRecord",
@@ -36,4 +52,4 @@ __all__ = [
     "WorkspaceSnapshot",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

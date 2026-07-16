@@ -76,6 +76,11 @@ class PublicationStatus(str, Enum):
     PULL_REQUEST_CREATED = "pull_request_created"
 
 
+class EvaluationStatus(str, Enum):
+    EVALUATED = "evaluated"
+    PROMOTED = "promoted"
+
+
 @dataclass(frozen=True, slots=True)
 class Goal:
     goal_id: str
@@ -619,6 +624,128 @@ class PerformanceRecord:
     @property
     def success_rate(self) -> float:
         return self.passes / self.attempts if self.attempts else 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class BenchmarkCase:
+    case_id: str
+    task_type: str
+    input: dict[str, Any]
+    acceptance_criteria: dict[str, Any]
+    context: dict[str, Any] = field(default_factory=dict)
+    critical: bool = False
+
+    @classmethod
+    def create(
+        cls,
+        case_id: str,
+        task_type: str,
+        input: dict[str, Any],
+        acceptance_criteria: dict[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+        critical: bool = False,
+    ) -> BenchmarkCase:
+        if not case_id.strip() or not task_type.strip():
+            raise ValueError("benchmark case ID and task type must not be empty")
+        if not acceptance_criteria:
+            raise ValueError("benchmark acceptance criteria must not be empty")
+        return cls(
+            case_id.strip(),
+            task_type.strip(),
+            dict(input),
+            dict(acceptance_criteria),
+            dict(context or {}),
+            bool(critical),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateIdentity:
+    agent_id: str
+    model_id: str
+
+    def __post_init__(self) -> None:
+        if not self.agent_id.strip() or not self.model_id.strip():
+            raise ValueError("candidate agent and model IDs must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateExecution:
+    output: Any
+    duration_ms: float
+
+    def __post_init__(self) -> None:
+        if self.duration_ms < 0:
+            raise ValueError("candidate duration must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class CaseEvaluation:
+    passed: bool
+    score: float
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.score <= 100:
+            raise ValueError("case score must be between 0 and 100")
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationOutcome:
+    outcome_id: str
+    run_id: str
+    case_id: str
+    candidate_agent_id: str
+    candidate_model_id: str
+    passed: bool
+    score: float
+    duration_ms: float
+    critical: bool
+    error: str = ""
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationRun:
+    run_id: str
+    task_type: str
+    benchmark_digest: str
+    champion_agent_id: str
+    champion_model_id: str
+    challenger_agent_id: str
+    challenger_model_id: str
+    case_count: int
+    metrics: dict[str, Any]
+    recommended: bool
+    failed_gates: tuple[str, ...]
+    status: EvaluationStatus = EvaluationStatus.EVALUATED
+    promoted_by: str = ""
+    promoted_at: str = ""
+    created_at: str = field(default_factory=utc_now)
+
+    def promote(self, promoted_by: str) -> EvaluationRun:
+        if not self.recommended:
+            raise ValueError("evaluation is not recommended for promotion")
+        if self.status != EvaluationStatus.EVALUATED:
+            raise ValueError("evaluation is already promoted")
+        if not promoted_by.strip():
+            raise ValueError("promoted_by must not be empty")
+        return replace(
+            self,
+            status=EvaluationStatus.PROMOTED,
+            promoted_by=promoted_by.strip(),
+            promoted_at=utc_now(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DeploymentRecord:
+    task_type: str
+    champion_agent_id: str
+    champion_model_id: str
+    source_run_id: str
+    promoted_by: str
+    created_at: str = field(default_factory=utc_now)
 
 
 @dataclass(frozen=True, slots=True)

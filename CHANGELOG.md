@@ -2,6 +2,16 @@
 
 All notable changes are documented here.
 
+## 0.5.0 - 2026-07-16
+
+- Added a bounded MCP `2025-11-25` stdio client with initialization, paginated tool discovery, and tool calls.
+- Added mandatory operator-owned risk mappings and namespace isolation for discovered MCP tools.
+- Added immutable benchmark cases, stable benchmark digests, and durable per-candidate case outcomes.
+- Added champion/challenger gates for critical failures, pass rate, mean score, per-case regression, and p95 latency.
+- Added explicit, identity-checked promotion and active task-type deployment records.
+- Added production routing that blocks when an approved champion is unavailable instead of silently falling back.
+- Added `evaluate`, `evaluations`, `promote`, and `deployments` CLI workflows and a reproducible benchmark example.
+
 ## 0.4.0 - 2026-07-16
 
 - Added verification-gated Git commit, push, and GitHub pull-request publication.

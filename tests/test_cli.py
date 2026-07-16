@@ -290,6 +290,100 @@ class CLITests(unittest.TestCase):
                     )
                 reopened.close()
 
+    def test_evaluate_inspect_promote_and_deployments_workflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = str(root / "evaluation.db")
+            spec_path = root / "benchmark.json"
+            cases = []
+            for index in range(1, 6):
+                cases.append(
+                    {
+                        "case_id": f"case-{index}",
+                        "input": {"prompt": f"question {index}"},
+                        "acceptance_criteria": {"minimum_score": 70},
+                        "critical": index == 1,
+                        "results": {
+                            "champion": {"passed": True, "score": 80, "duration_ms": 100},
+                            "challenger": {"passed": True, "score": 84, "duration_ms": 110},
+                        },
+                    }
+                )
+            spec_path.write_text(
+                json.dumps(
+                    {
+                        "task_type": "analysis",
+                        "champion": {"agent_id": "champion", "model_id": "model-a"},
+                        "challenger": {"agent_id": "challenger", "model_id": "model-b"},
+                        "cases": cases,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code, output, error = self.run_cli(
+                ["evaluate", str(spec_path), "--db", database, "--json"]
+            )
+            run = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertTrue(run["recommended"])
+
+            repository = SQLiteRepository(database)
+            self.assertIsNone(repository.get_deployment("analysis"))
+            repository.close()
+
+            code, output, error = self.run_cli(
+                ["evaluations", run["run_id"], "--db", database, "--json"]
+            )
+            inspected = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(len(inspected["outcomes"]), 10)
+
+            code, output, error = self.run_cli(
+                [
+                    "promote",
+                    run["run_id"],
+                    "--by",
+                    "operator",
+                    "--db",
+                    database,
+                    "--json",
+                ]
+            )
+            deployment = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(deployment["champion_agent_id"], "challenger")
+
+            code, output, error = self.run_cli(
+                ["deployments", "--db", database, "--json"]
+            )
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(json.loads(output), [deployment])
+
+    def test_empty_evaluation_benchmark_returns_controlled_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = root / "empty.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "task_type": "analysis",
+                        "champion": {"agent_id": "a", "model_id": "model-a"},
+                        "challenger": {"agent_id": "b", "model_id": "model-b"},
+                        "cases": [],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code, output, error = self.run_cli(
+                ["evaluate", str(spec), "--db", str(root / "db.sqlite"), "--json"]
+            )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(output, "")
+        self.assertIn("at least one case", error)
+
 
 if __name__ == "__main__":
     unittest.main()

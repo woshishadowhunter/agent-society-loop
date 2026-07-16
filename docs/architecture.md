@@ -18,6 +18,8 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `providers.py` | OpenAI-compatible HTTP boundary |
 | `model_agents.py` | Strict JSON planner, worker, and reviewer adapters |
 | `tools.py` | Tool discovery, schema validation, policy, and approval enforcement |
+| `mcp.py` | Bounded MCP stdio transport, tool discovery, and local risk adaptation |
+| `evaluation.py` | Immutable benchmark evaluation and champion/challenger gates |
 | `tracing.py` | Linked, timed, redacted execution spans |
 | `github.py` | Bounded read-only GitHub issue retrieval |
 | `workspace_tools.py` | Bounded inspection, content-addressed writes, recovery, and named checks |
@@ -50,7 +52,7 @@ Terminal goals are immutable. An interrupted process normally leaves the goal `r
 1. Persist the goal and planning transition.
 2. Ask the planner for tasks and reject duplicate IDs, missing dependencies, cross-goal tasks, empty plans, or dependency cycles.
 3. Select the lowest-position pending task whose dependencies succeeded.
-4. Rank eligible specialists and record the complete decision breakdown.
+4. Enforce an active task-type deployment, or rank eligible specialists when no deployment exists.
 5. Execute the inner loop attempt.
 6. Re-read durable state and continue until a goal reaches a terminal state.
 
@@ -69,6 +71,8 @@ Worker exceptions become score-zero failed reviews. They therefore use the same 
 
 Candidates must be enabled, match the assigned role, and declare either the exact task type or `*`.
 
+An active deployment narrows candidates to one exact `(agent_id, model_id)` champion before ranking. If that identity is disabled, incompatible, missing from the worker runtime, or changed, the goal blocks. Silent fallback would bypass the promotion decision and is therefore forbidden.
+
 ```text
 score = 0.45 * success_rate
       + 0.35 * normalized_review_score
@@ -84,6 +88,7 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Long-term memory: titled, tagged text entries ranked by query-term and tag overlap.
 - Social memory: aggregate and recent outcomes keyed by agent and task type.
 - Audit memory: ordered events for goals, planning, selection, attempts, reviews, retries, recovery, and completion.
+- Evaluation memory: benchmark digests, per-case outcomes, gate metrics, promotion identity, and active deployments.
 
 SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. This keeps the database inspectable while preserving typed Python contracts.
 
@@ -106,6 +111,10 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Publication stages only goal-owned paths and requires current passing checks plus exact approval.
 - Commit, push, and PR creation advance through a durable, idempotent state machine.
 - Publication never merges, force-pushes, or deletes branches.
+- MCP server commands are operator configured, shell-free, secret-minimized, timed, and message bounded.
+- MCP tools without local risk classification are not registered; server hints cannot lower risk.
+- Evaluation recommendations never change routing without explicit, identity-checked promotion.
+- Deployed task types block when their champion is unavailable rather than falling back.
 
 ## Extension example
 
