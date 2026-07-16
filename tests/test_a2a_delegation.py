@@ -86,7 +86,11 @@ class A2ADelegationTests(unittest.TestCase):
         self.assertEqual(result.content, "direct answer")
         self.assertEqual(saved.status, DelegationStatus.COMPLETED)
         self.assertEqual(saved.result_sha256, hashlib.sha256(b"direct answer").hexdigest())
-        self.assertTrue(payload["returnImmediately"])
+        self.assertTrue(payload["configuration"]["returnImmediately"])
+        self.assertEqual(
+            payload["configuration"]["acceptedOutputModes"],
+            ["text/plain", "application/json"],
+        )
         self.assertEqual(transmitted["context"], {"review_feedback": ["Add evidence"]})
         self.assertNotIn("private", json.dumps(payload))
 
@@ -198,7 +202,7 @@ class A2ADelegationTests(unittest.TestCase):
         cases = [
             (task_response("TASK_STATE_INPUT_REQUIRED"), None, "interrupted", DelegationStatus.INTERRUPTED),
             (task_response("TASK_STATE_SUBMITTED"), task_response("TASK_STATE_COMPLETED", task_id="other", parts=[{"text": "x"}]), "identity", DelegationStatus.FAILED),
-            (task_response("TASK_STATE_COMPLETED", parts=[{"file": {"uri": "https://private"}}]), None, "part", DelegationStatus.FAILED),
+            (task_response("TASK_STATE_COMPLETED", parts=[{"url": "https://private"}]), None, "part", DelegationStatus.FAILED),
         ]
         for response, poll_response, pattern, status in cases:
             with self.subTest(pattern=pattern), FakeA2AServer() as server:

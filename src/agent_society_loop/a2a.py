@@ -705,7 +705,10 @@ class A2ARemoteExecutor:
                 "role": "ROLE_USER",
                 "parts": [{"data": data}],
             },
-            "returnImmediately": True,
+            "configuration": {
+                "acceptedOutputModes": ["text/plain", "application/json"],
+                "returnImmediately": True,
+            },
         }
 
     def _execution(self, delegation: DelegationRecord, started: float) -> RemoteExecution:

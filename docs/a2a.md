@@ -53,9 +53,9 @@ Use `--allow-insecure-localhost` only for explicit `localhost`, `127.0.0.1`, or 
 
 ## Data boundary / 数据边界
 
-Every request always contains the task description, acceptance criteria, pinned skill ID, durable message ID, and `returnImmediately: true`. Additional context is limited to the registration allowlist:
+Every request always contains the task description, acceptance criteria, pinned skill ID, durable message ID, and `configuration.returnImmediately: true`. Additional context is limited to the registration allowlist:
 
-每个请求固定包含任务描述、验收标准、已固定技能 ID、持久 message ID 和 `returnImmediately: true`。额外上下文仅能来自注册时的允许列表：
+每个请求固定包含任务描述、验收标准、已固定技能 ID、持久 message ID 和 `configuration.returnImmediately: true`。额外上下文仅能来自注册时的允许列表：
 
 - `goal`
 - `task_context`
