@@ -26,7 +26,9 @@ from .domain import (
     TaskStatus,
     SpanStatus,
     TraceSpan,
+    VerificationResult,
     Verdict,
+    WorkspaceSnapshot,
 )
 
 
@@ -128,6 +130,21 @@ class SQLiteRepository:
             );
             CREATE INDEX IF NOT EXISTS trace_spans_goal_idx
                 ON trace_spans(goal_id, task_id);
+            CREATE TABLE IF NOT EXISTS workspace_snapshots (
+                goal_id TEXT NOT NULL,
+                path TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                PRIMARY KEY(goal_id, path)
+            );
+            CREATE TABLE IF NOT EXISTS verification_results (
+                result_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                check_name TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS verification_results_goal_idx
+                ON verification_results(goal_id, task_id, check_name);
             """
         )
         self.connection.commit()
@@ -464,3 +481,61 @@ class SQLiteRepository:
             data["status"] = SpanStatus(data["status"])
             result.append(TraceSpan(**data))
         return result
+
+    def save_workspace_snapshot(self, snapshot: WorkspaceSnapshot) -> None:
+        existing = self.get_workspace_snapshot(snapshot.goal_id, snapshot.path)
+        if existing is not None and (
+            existing.original_exists != snapshot.original_exists
+            or existing.original_content != snapshot.original_content
+            or existing.original_sha256 != snapshot.original_sha256
+            or existing.created_at != snapshot.created_at
+        ):
+            raise ValueError("workspace snapshot original recovery point cannot change")
+        self.connection.execute(
+            "INSERT INTO workspace_snapshots(goal_id, path, payload) VALUES (?, ?, ?) "
+            "ON CONFLICT(goal_id, path) DO UPDATE SET payload=excluded.payload",
+            (snapshot.goal_id, snapshot.path, _dump(asdict(snapshot))),
+        )
+        self.connection.commit()
+
+    def get_workspace_snapshot(
+        self, goal_id: str, path: str
+    ) -> WorkspaceSnapshot | None:
+        row = self.connection.execute(
+            "SELECT payload FROM workspace_snapshots WHERE goal_id=? AND path=?",
+            (goal_id, path),
+        ).fetchone()
+        return WorkspaceSnapshot(**_load(row["payload"])) if row is not None else None
+
+    def list_workspace_snapshots(self, goal_id: str) -> list[WorkspaceSnapshot]:
+        rows = self.connection.execute(
+            "SELECT payload FROM workspace_snapshots WHERE goal_id=? ORDER BY path",
+            (goal_id,),
+        ).fetchall()
+        return [WorkspaceSnapshot(**_load(row["payload"])) for row in rows]
+
+    def save_verification_result(self, result: VerificationResult) -> None:
+        self.connection.execute(
+            "INSERT INTO verification_results(result_id, goal_id, task_id, check_name, payload) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                result.result_id,
+                result.goal_id,
+                result.task_id,
+                result.check_name,
+                _dump(asdict(result)),
+            ),
+        )
+        self.connection.commit()
+
+    def list_verification_results(self, goal_id: str) -> list[VerificationResult]:
+        rows = self.connection.execute(
+            "SELECT payload FROM verification_results WHERE goal_id=? ORDER BY rowid",
+            (goal_id,),
+        ).fetchall()
+        results = []
+        for row in rows:
+            data = _load(row["payload"])
+            data["command"] = tuple(data["command"])
+            results.append(VerificationResult(**data))
+        return results

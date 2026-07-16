@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_society_loop.cli import main
+from agent_society_loop.cli import build_parser, main
 from agent_society_loop.domain import (
     ApprovalRequest,
     ApprovalStatus,
@@ -45,6 +45,23 @@ class FakeIssueClient:
 
 
 class CLITests(unittest.TestCase):
+    def test_maintain_apply_parser_requires_named_check_declarations(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "maintain",
+                "owner/repo",
+                "12",
+                "--workspace",
+                ".",
+                "--apply",
+                "--check",
+                "tests=python -m unittest",
+            ]
+        )
+
+        self.assertTrue(args.apply)
+        self.assertEqual(args.checks, ["tests=python -m unittest"])
     def run_cli(self, argv):
         stdout = io.StringIO()
         stderr = io.StringIO()

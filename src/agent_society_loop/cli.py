@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from dataclasses import asdict, is_dataclass
 from enum import Enum
@@ -16,7 +17,11 @@ from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import AgentProfile, Goal, RunBudget, Task
 from .engine import LoopEngine, resolve_approval
 from .github import GitHubIssueClient
-from .maintenance import build_maintenance_engine, create_maintenance_goal
+from .maintenance import (
+    build_maintenance_engine,
+    create_maintenance_goal,
+    maintenance_goal_configuration,
+)
 from .memory import MemoryManager
 from .providers import OpenAICompatibleProvider
 from .selection import PerformanceWeightedSelector
@@ -142,6 +147,8 @@ def _status(repository: SQLiteRepository, goal_id: str) -> dict[str, Any]:
         "artifacts": repository.list_artifacts(goal_id),
         "approvals": repository.list_approvals(goal_id),
         "spans": repository.list_spans(goal_id),
+        "workspace_snapshots": repository.list_workspace_snapshots(goal_id),
+        "verification_results": repository.list_verification_results(goal_id),
     }
 
 
@@ -161,6 +168,33 @@ def _provider_from_environment() -> OpenAICompatibleProvider:
 def _maintenance_goal_id(repository: str, issue: int) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", repository.casefold()).strip("-")
     return f"maintain-{slug}-{issue}"
+
+
+def _parse_check_declarations(values: Sequence[str]) -> dict[str, tuple[str, ...]]:
+    result = {}
+    for declaration in values:
+        name, separator, command_text = declaration.partition("=")
+        name = name.strip()
+        if not separator or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
+            raise ValueError("checks must use NAME=COMMAND with a safe short name")
+        if name in result:
+            raise ValueError(f"duplicate check: {name}")
+        try:
+            command = tuple(shlex.split(command_text, posix=True))
+        except ValueError as error:
+            raise ValueError(f"invalid check command for {name}: {error}") from error
+        if not command:
+            raise ValueError(f"check command must not be empty: {name}")
+        result[name] = command
+    return result
+
+
+def _database_protected_paths(database: str, workspace: Path) -> tuple[str, ...]:
+    database_path = Path(database).resolve()
+    if not database_path.is_relative_to(workspace):
+        return ()
+    relative = database_path.relative_to(workspace).as_posix()
+    return (relative, f"{relative}-shm", f"{relative}-wal")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -202,6 +236,19 @@ def build_parser() -> argparse.ArgumentParser:
     maintain.add_argument("--workspace", required=True)
     maintain.add_argument("--goal-id")
     maintain.add_argument("--db", default="agent-society.db")
+    maintain.add_argument(
+        "--apply",
+        action="store_true",
+        help="enable approved local UTF-8 writes and named verification checks",
+    )
+    maintain.add_argument(
+        "--check",
+        dest="checks",
+        action="append",
+        default=[],
+        metavar="NAME=COMMAND",
+        help="operator-configured verification command; repeat for multiple checks",
+    )
     maintain.add_argument("--json", action="store_true")
 
     traces = commands.add_parser("traces", help="inspect linked execution spans")
@@ -306,8 +353,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "maintain":
             provider = _provider_from_environment()
+            workspace = Path(args.workspace).resolve()
+            checks = _parse_check_declarations(args.checks)
+            if args.apply and not checks:
+                raise ValueError("--apply requires at least one --check NAME=COMMAND")
+            if checks and not args.apply:
+                raise ValueError("--check requires --apply")
             engine = build_maintenance_engine(
-                repository, provider, Path(args.workspace)
+                repository,
+                provider,
+                workspace,
+                apply=args.apply,
+                checks=checks,
+                protected_paths=_database_protected_paths(args.db, workspace),
             )
             goal_id = args.goal_id or _maintenance_goal_id(
                 args.repository, args.issue
@@ -317,7 +375,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 issue = GitHubIssueClient(
                     token=os.environ.get("GITHUB_TOKEN", "")
                 ).get_issue(args.repository, args.issue)
-                goal = create_maintenance_goal(engine, issue, goal_id=goal_id)
+                goal = create_maintenance_goal(
+                    engine,
+                    issue,
+                    goal_id=goal_id,
+                    apply=args.apply,
+                    workspace=workspace if args.apply else None,
+                    check_names=tuple(checks),
+                )
+            else:
+                stored_apply, stored_checks = maintenance_goal_configuration(goal)
+                if stored_apply != args.apply or stored_checks != tuple(sorted(checks)):
+                    raise ValueError(
+                        "maintenance resume must use the original apply mode and check names"
+                    )
             report = engine.resume(goal.goal_id)
             _emit(
                 report,

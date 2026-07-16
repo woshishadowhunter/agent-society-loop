@@ -43,9 +43,9 @@ agent-society agents --db demo.db --json
 
 The bundled scenario deliberately produces an incomplete first market report. The reviewer rejects it, the defect enters short-term memory, and the specialist repairs the report on its second attempt.
 
-## Inspect a GitHub issue with real model agents
+## Inspect or implement a GitHub issue with real model agents
 
-Version 0.2 includes strict JSON planner, worker, and reviewer adapters plus bounded read-only repository tools. Configure an OpenAI-compatible endpoint and run a reviewed maintenance intake:
+The default workflow remains read-only. Configure an OpenAI-compatible endpoint and run a reviewed maintenance intake:
 
 ```bash
 export MODEL_API_KEY="..."
@@ -54,7 +54,15 @@ agent-society maintain owner/repository 123 --workspace . --db maintain.db --jso
 agent-society traces maintain-owner-repository-123 --db maintain.db --json
 ```
 
-The workflow reads the public issue, lists/searches/reads UTF-8 files under `--workspace`, and produces a reviewed maintenance proposal. It does not modify files, execute commands, or create a pull request. Write and execute tools added by integrators require a durable approval before invocation.
+Version 0.3 also provides an opt-in guarded execution mode. Checks are configured by the operator and selected by name; the model cannot provide shell text:
+
+```bash
+agent-society maintain owner/repository 123 \
+  --workspace . --db ../maintain.db --apply \
+  --check "tests=python -m unittest discover -s tests -v" --json
+```
+
+The run pauses before each content-addressed write and named check. Approve the displayed request with `agent-society approve APPROVAL_ID --by NAME --db ../maintain.db`, then repeat the same `maintain` command to resume. Writes are atomic, stale hashes are rejected, checks are bounded and shell-free, and pre-change content is durably recoverable. A deterministic reviewer gate rejects PASS unless every configured check passed against the current workspace digest. This mode still does not commit, push, or create a pull request.
 
 ## Architecture
 
@@ -114,6 +122,7 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society events GOAL_ID` | Read the ordered audit trail |
 | `agent-society agents` | Inspect agent profiles and performance |
 | `agent-society maintain OWNER/REPO ISSUE` | Produce a reviewed, read-only maintenance proposal |
+| `agent-society maintain ... --apply --check NAME=COMMAND` | Apply approved local changes and run approved named checks |
 | `agent-society traces GOAL_ID` | Inspect linked model and tool trace spans |
 | `agent-society approvals GOAL_ID` | Inspect pending and resolved tool approvals |
 | `agent-society approve APPROVAL_ID` | Approve a paused write or execute tool call |
@@ -150,11 +159,11 @@ Use `ModelPlanner`, `ModelWorker`, and `ModelReviewer` from `model_agents.py` wh
 
 After each reviewed attempt, the runtime updates performance for `(agent_id, task_type)`. Future routing combines success rate, review score, latency, and sample confidence. The score breakdown is recorded in the event log.
 
-The runtime does **not** rewrite its own source code, prompts, acceptance criteria, or safety policy. That boundary keeps changes reviewable and prevents a weak result from redefining what “good” means.
+The runtime never approves its own mutations and does **not** rewrite prompts, acceptance criteria, or safety policy. Guarded maintenance may change the selected workspace only through exact, durable approvals. That boundary keeps changes reviewable and prevents a weak result from redefining what “good” means.
 
 ## Current boundaries
 
-Version 0.2 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. The GitHub maintenance workflow is deliberately read-only: patch application, command execution, pull-request creation, distributed workers, concurrent scheduling, MCP/A2A adapters, and a web UI remain future work.
+Version 0.3 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. Guarded maintenance edits UTF-8 text and runs operator-configured checks locally, but it cannot delete or rename files, install packages, commit, push, or create pull requests. Distributed workers, concurrent scheduling, MCP/A2A adapters, publication gates, and a web UI remain future work.
 
 ## Development
 

@@ -91,9 +91,9 @@ JSON 文件可以定义目标、任务依赖、初始产出、返工产出和验
 
 完整字段说明见 [目标规范](docs/goal-spec.md)。
 
-## 用真实模型检查 GitHub Issue
+## 用真实模型检查或实施 GitHub Issue
 
-v0.2 内置严格 JSON 规划、执行和质检 Agent，以及有边界的只读仓库工具。配置 OpenAI-compatible 模型后，可以运行一次经过质检的维护分析：
+默认工作流仍然只读。配置 OpenAI-compatible 模型后，可以运行一次经过质检的维护分析：
 
 ```bash
 export MODEL_API_KEY="..."
@@ -102,7 +102,15 @@ agent-society maintain owner/repository 123 --workspace . --db maintain.db --jso
 agent-society traces maintain-owner-repository-123 --db maintain.db --json
 ```
 
-这个工作流会读取公开 Issue，在 `--workspace` 范围内列举、搜索和读取 UTF-8 文件，并生成维护建议。默认不会修改文件、执行命令或创建 Pull Request。集成者以后注册的写入和执行工具，也必须先获得持久化审批才能调用。
+v0.3 还提供显式开启的受控执行模式。验证命令由操作者预先配置，模型只能按名称选择，不能提供 Shell 文本：
+
+```bash
+agent-society maintain owner/repository 123 \
+  --workspace . --db ../maintain.db --apply \
+  --check "tests=python -m unittest discover -s tests -v" --json
+```
+
+每次内容寻址写入和命名检查前，目标都会暂停。使用 `agent-society approve APPROVAL_ID --by NAME --db ../maintain.db` 批准后，重复原 `maintain` 命令即可恢复。写入采用原子替换并拒绝过期哈希，检查无 Shell、有限时且限制输出，修改前内容可持久恢复。确定性质检门禁会拒绝缺少验证证据的 PASS，并要求所有检查都在当前工作区摘要上真实通过。这个模式仍不会提交、推送或创建 Pull Request。
 
 ## 常用命令
 
@@ -114,6 +122,7 @@ agent-society traces maintain-owner-repository-123 --db maintain.db --json
 | `agent-society events GOAL_ID` | 查看有序审计事件 |
 | `agent-society agents` | 查看 Agent 档案和绩效 |
 | `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
+| `agent-society maintain ... --apply --check NAME=COMMAND` | 应用获批的本地修改并运行获批的命名检查 |
 | `agent-society traces GOAL_ID` | 查看模型与工具的关联 Trace |
 | `agent-society approvals GOAL_ID` | 查看待处理及已处理审批 |
 | `agent-society approve APPROVAL_ID` | 批准暂停中的写入或执行工具 |
@@ -145,11 +154,11 @@ provider = OpenAICompatibleProvider(
 
 每次经过质检的执行都会更新 `(agent_id, task_type)` 绩效，包括通过率、平均得分、耗时和近期结果。下一次分配同类型任务时，选择器综合这些数据，并把评分明细记录到事件日志。
 
-当前版本不会自主修改代码、提示词、验收标准或安全规则。我们把“进化”限制在可验证的路由优化上，避免一次低质量结果反过来降低质量标准。
+运行时永远不会自行批准修改，也不会改写提示词、验收标准或安全规则。受控维护只能根据精确且持久化的审批修改指定工作区，避免一次低质量结果反过来降低质量标准。
 
 ## 当前边界
 
-v0.2 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。GitHub 维护工作流刻意保持只读：应用补丁、执行命令、创建 Pull Request、分布式队列、并发调度、MCP/A2A 适配器和 Web 控制台仍属于后续工作。
+v0.3 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。受控维护可以编辑 UTF-8 文本并运行操作者配置的本地检查，但不能删除或重命名文件、安装依赖、提交、推送或创建 Pull Request。分布式队列、并发调度、MCP/A2A 适配器、发布门禁和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

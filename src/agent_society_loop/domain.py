@@ -420,6 +420,114 @@ class TraceSpan:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkspaceSnapshot:
+    goal_id: str
+    path: str
+    original_exists: bool
+    original_content: str
+    original_sha256: str
+    previous_sha256: str
+    latest_sha256: str
+    restored: bool = False
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        path: str,
+        original_exists: bool,
+        original_content: str,
+        original_sha256: str,
+        latest_sha256: str,
+    ) -> WorkspaceSnapshot:
+        for name, value in (
+            ("goal_id", goal_id),
+            ("path", path),
+            ("original_sha256", original_sha256),
+            ("latest_sha256", latest_sha256),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must not be empty")
+        if not original_exists and original_content:
+            raise ValueError("missing original file cannot have content")
+        return cls(
+            goal_id.strip(),
+            path.strip(),
+            original_exists,
+            original_content,
+            original_sha256.strip(),
+            original_sha256.strip(),
+            latest_sha256.strip(),
+        )
+
+    def advance(self, latest_sha256: str, *, restored: bool = False) -> WorkspaceSnapshot:
+        if not latest_sha256.strip():
+            raise ValueError("latest_sha256 must not be empty")
+        return replace(
+            self,
+            previous_sha256=self.latest_sha256,
+            latest_sha256=latest_sha256.strip(),
+            restored=restored,
+            updated_at=utc_now(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class VerificationResult:
+    result_id: str
+    goal_id: str
+    task_id: str
+    check_name: str
+    command: tuple[str, ...]
+    passed: bool
+    exit_code: int
+    duration_ms: float
+    stdout: str
+    stderr: str
+    workspace_digest: str
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        check_name: str,
+        command: Sequence[str],
+        passed: bool,
+        exit_code: int,
+        duration_ms: float,
+        stdout: str,
+        stderr: str,
+        workspace_digest: str,
+    ) -> VerificationResult:
+        if not goal_id.strip() or not task_id.strip() or not check_name.strip():
+            raise ValueError("goal_id, task_id, and check_name must not be empty")
+        normalized_command = tuple(str(part) for part in command)
+        if not normalized_command or any(not part for part in normalized_command):
+            raise ValueError("verification command must not be empty")
+        if duration_ms < 0:
+            raise ValueError("duration_ms must not be negative")
+        if not workspace_digest.strip():
+            raise ValueError("workspace_digest must not be empty")
+        return cls(
+            f"verification-{uuid4().hex[:16]}",
+            goal_id.strip(),
+            task_id.strip(),
+            check_name.strip(),
+            normalized_command,
+            bool(passed),
+            int(exit_code),
+            float(duration_ms),
+            stdout,
+            stderr,
+            workspace_digest.strip(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AgentProfile:
     agent_id: str
     role: str
