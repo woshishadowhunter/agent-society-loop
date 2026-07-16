@@ -27,6 +27,8 @@ Execution happens after commit and outside every database lock. A future worker 
 
 Do not run the synchronous `LoopEngine` against a goal with an active scheduler claim. The engine detects this condition and fails closed instead of applying its legacy interrupted-task recovery. Complete, release, or explicitly reap the claim first.
 
+Legacy per-task mutation methods (`save_task`, `save_artifact`, `save_review`, and `save_attempt_outcome`) also reject active scheduler ownership. Scheduler-managed results must use the fenced commit API.
+
 The result must be persisted with `commit_claim_outcome`. This call revalidates the current durable claim and atomically writes:
 
 - the optional artifact;
@@ -94,6 +96,8 @@ v0.8 提供了把任务执行迁移到多个 worker 进程之前所需的所有�
 领取使用短 `BEGIN IMMEDIATE` 事务，事务内重新检查 worker session、目标状态、任务状态、依赖和 active claim，然后同时递增 token、写入 claim、把任务改为 running。耗时执行发生在事务之外。
 
 不要对存在 active scheduler claim 的目标运行同步 `LoopEngine`。引擎会拒绝执行，而不会使用旧版中断恢复逻辑重置该任务；必须先完成、释放或显式 reap claim。
+
+旧的逐任务写入方法 `save_task`、`save_artifact`、`save_review` 和 `save_attempt_outcome` 也会拒绝 active scheduler ownership；调度任务的结果必须通过 fenced commit API 写入。
 
 结果必须通过 `commit_claim_outcome` 提交。它会再次验证当前持有者，并在一个事务中写入 artifact、review、attempt、performance、events、最终 task 和 committed claim。质检失败的草稿可以作为审计 artifact 保留，但 task 回到 pending；质检通过时 task 才链接最终 artifact。
 

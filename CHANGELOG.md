@@ -11,6 +11,8 @@ All notable changes are documented here.
 - Added explicit expiry recovery that blocks ambiguous/interrupted A2A work while preserving accepted/completed no-resend recovery.
 - Added scheduler worker/claim inspection, explicit reap, and a deterministic two-connection five-invariant safety campaign.
 - Added a synchronous-engine guard that refuses to recover a task while an active scheduler claim owns it.
+- Closed legacy per-task write paths while a claim is active, requiring scheduler-managed outcomes to use the fenced atomic commit.
+- Added outcome consistency validation so a succeeded task requires both an artifact and a passing review.
 - Preserved v0.7 database compatibility and documented the exact same-host, non-exactly-once external-side-effect boundary.
 
 ## 0.7.0 - 2026-07-16

@@ -714,6 +714,12 @@ class SQLiteRepository:
                 or performance.task_type != task.task_type
             ):
                 raise ValueError("outcome identity does not match active claim")
+            if task.status == TaskStatus.SUCCEEDED and (
+                artifact is None or review.verdict != Verdict.PASS
+            ):
+                raise ValueError(
+                    "succeeded task requires a passing review and artifact"
+                )
             if artifact is None:
                 if attempt.artifact_id is not None or task.artifact_id is not None:
                     raise ValueError("outcome artifact identity is inconsistent")
@@ -830,9 +836,26 @@ class SQLiteRepository:
         data["status"] = GoalStatus(data["status"])
         return Goal(**data)
 
+    def _reject_legacy_claimed_write_locked(
+        self, goal_id: str, task_id: str
+    ) -> None:
+        row = self.connection.execute(
+            "SELECT 1 FROM task_claims "
+            "WHERE goal_id=? AND task_id=? AND status='active'",
+            (goal_id, task_id),
+        ).fetchone()
+        if row is not None:
+            raise StaleClaim(
+                "active scheduler claim requires a fenced outcome mutation"
+            )
+
     def save_tasks(self, tasks: Iterable[Task]) -> None:
-        with self.connection:
-            for task in tasks:
+        values = list(tasks)
+        with self._immediate_transaction():
+            for task in values:
+                self._reject_legacy_claimed_write_locked(
+                    task.goal_id, task.task_id
+                )
                 self.connection.execute(
                     "INSERT INTO tasks(task_id, goal_id, position, payload) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT(goal_id, task_id) DO UPDATE SET "
@@ -857,11 +880,20 @@ class SQLiteRepository:
         return tasks
 
     def save_artifact(self, artifact: Artifact) -> None:
-        self.connection.execute(
-            "INSERT INTO artifacts(artifact_id, goal_id, task_id, payload) VALUES (?, ?, ?, ?)",
-            (artifact.artifact_id, artifact.goal_id, artifact.task_id, _dump(asdict(artifact))),
-        )
-        self.connection.commit()
+        with self._immediate_transaction():
+            self._reject_legacy_claimed_write_locked(
+                artifact.goal_id, artifact.task_id
+            )
+            self.connection.execute(
+                "INSERT INTO artifacts(artifact_id, goal_id, task_id, payload) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    artifact.artifact_id,
+                    artifact.goal_id,
+                    artifact.task_id,
+                    _dump(asdict(artifact)),
+                ),
+            )
 
     def list_artifacts(self, goal_id: str, task_id: str | None = None) -> list[Artifact]:
         if task_id is None:
@@ -876,18 +908,21 @@ class SQLiteRepository:
         return [Artifact(**_load(row["payload"])) for row in rows]
 
     def save_review(self, review: Review) -> None:
-        self.connection.execute(
-            "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                review.review_id,
-                review.goal_id,
-                review.task_id,
-                review.attempt_no,
-                _dump(asdict(review)),
-            ),
-        )
-        self.connection.commit()
+        with self._immediate_transaction():
+            self._reject_legacy_claimed_write_locked(
+                review.goal_id, review.task_id
+            )
+            self.connection.execute(
+                "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    review.review_id,
+                    review.goal_id,
+                    review.task_id,
+                    review.attempt_no,
+                    _dump(asdict(review)),
+                ),
+            )
 
     def list_reviews(self, goal_id: str, task_id: str | None = None) -> list[Review]:
         query = "SELECT payload FROM reviews WHERE goal_id=?"
@@ -923,7 +958,10 @@ class SQLiteRepository:
         event: Event,
     ) -> None:
         """Commit the reviewed outcome and its audit evidence as one unit."""
-        with self.connection:
+        with self._immediate_transaction():
+            self._reject_legacy_claimed_write_locked(
+                attempt.goal_id, attempt.task_id
+            )
             self.connection.execute(
                 "INSERT INTO attempts(attempt_id, goal_id, task_id, attempt_no, payload) "
                 "VALUES (?, ?, ?, ?, ?)",

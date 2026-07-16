@@ -444,6 +444,37 @@ class SchedulerOutcomeTests(unittest.TestCase):
         self.assertEqual(self.first.list_attempts("g", "t"), [])
         self.assertEqual(self.first.list_reviews("g", "t"), [])
 
+    def test_succeeded_task_requires_a_passing_review_and_artifact(self):
+        claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        artifact = Artifact.create("g", "t", "agent-a", "rejected artifact")
+        review = Review.create("g", "t", 1, Verdict.FAIL, 20, [], "Rejected")
+        attempt = Attempt.create(
+            "g", "t", "agent-a", 1, 4.0, artifact.artifact_id, review.review_id
+        )
+        succeeded = replace(
+            self.first.list_tasks("g")[0],
+            status=TaskStatus.SUCCEEDED,
+            artifact_id=artifact.artifact_id,
+        )
+
+        with self.assertRaisesRegex(ValueError, "succeeded task"):
+            self.first.commit_claim_outcome(
+                claim,
+                succeeded,
+                artifact,
+                attempt,
+                review,
+                PerformanceRecord("agent-a", "analysis", 1, 0, 20.0, 4.0),
+                [],
+                now=PLUS_5,
+            )
+
+        self.assertEqual(self.first.list_artifacts("g", "t"), [])
+        self.assertEqual(self.first.get_claim(claim.claim_id).status, ClaimStatus.ACTIVE)
+
     def test_risky_remote_expiry_blocks_but_accepted_remote_work_is_resumable(self):
         risky = self.first.claim_task(
             "g", "t", "worker-a", "session-a", "agent-a",
@@ -519,6 +550,50 @@ class SchedulerEngineBoundaryTests(unittest.TestCase):
         self.assertEqual(repository.get_claim(claim.claim_id).status, ClaimStatus.ACTIVE)
         self.assertEqual(repository.list_tasks("owned")[0].status, TaskStatus.RUNNING)
         self.assertEqual(repository.get_goal("owned").status, GoalStatus.RUNNING)
+        repository.close()
+
+    def test_legacy_task_outcome_writes_cannot_bypass_active_claim(self):
+        repository = SQLiteRepository(":memory:")
+        goal = replace(
+            Goal.create("Fence", "Reject legacy writes", goal_id="fence"),
+            status=GoalStatus.RUNNING,
+        )
+        task = Task.create("fence", "task", "analysis", "Analyze")
+        repository.save_goal(goal)
+        repository.save_task(task)
+        repository.register_worker(
+            WorkerSession.create(
+                "process-a", "session-a", ("analysis",), now=AT, ttl_seconds=60
+            )
+        )
+        repository.claim_task(
+            "fence", "task", "process-a", "session-a", "agent-a",
+            now=AT, lease_seconds=30,
+        )
+        artifact = Artifact.create("fence", "task", "agent-a", "bypass")
+        review = Review.create("fence", "task", 1, Verdict.FAIL, 0, [], "bypass")
+        attempt = Attempt.create(
+            "fence", "task", "agent-a", 1, 1.0, None, review.review_id
+        )
+        performance = PerformanceRecord("agent-a", "analysis", 1, 0, 0.0, 1.0)
+
+        for mutation in (
+            lambda: repository.save_task(replace(task, status=TaskStatus.PENDING)),
+            lambda: repository.save_artifact(artifact),
+            lambda: repository.save_review(review),
+            lambda: repository.save_attempt_outcome(
+                attempt,
+                review,
+                performance,
+                Event.create("fence", "task.attempt_completed", {}),
+            ),
+        ):
+            with self.assertRaisesRegex(StaleClaim, "fenced"):
+                mutation()
+
+        self.assertEqual(repository.list_artifacts("fence", "task"), [])
+        self.assertEqual(repository.list_reviews("fence", "task"), [])
+        self.assertEqual(repository.list_attempts("fence", "task"), [])
         repository.close()
 
 
