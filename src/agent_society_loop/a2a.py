@@ -5,13 +5,22 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from contextlib import nullcontext
 from typing import Any, Mapping
+from uuid import uuid4
 
-from .domain import AgentProfile, RemoteAgentRegistration
+from .domain import (
+    AgentProfile,
+    DelegationRecord,
+    DelegationStatus,
+    RemoteAgentRegistration,
+    Task,
+)
 
 
 class A2AError(RuntimeError):
@@ -169,7 +178,14 @@ class A2AHTTPClient:
         request = urllib.request.Request(url, data=body, headers=headers, method=method)
         try:
             with self._opener.open(request, timeout=self.limits.request_timeout) as response:
-                data = self._bounded_read(response)
+                try:
+                    data = self._bounded_read(response)
+                except A2AProtocolError:
+                    if ambiguous:
+                        raise A2AAmbiguousSubmission(
+                            "A2A message submission outcome is ambiguous"
+                        ) from None
+                    raise
                 return data, response.headers
         except urllib.error.HTTPError as error:
             error.close()
@@ -315,3 +331,408 @@ def register_remote_agent(
     )
     repository.save_remote_agent_profile(registration, profile)
     return registration
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteExecution:
+    content: str
+    delegation_id: str
+    card_sha256: str
+    remote_task_id: str = ""
+    duration_ms: float = 0.0
+
+
+_ACTIVE_TASK_STATES = {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"}
+_INTERRUPTED_TASK_STATES = {
+    "TASK_STATE_INPUT_REQUIRED",
+    "TASK_STATE_AUTH_REQUIRED",
+}
+_TERMINAL_STATUS_BY_TASK_STATE = {
+    "TASK_STATE_FAILED": DelegationStatus.FAILED,
+    "TASK_STATE_CANCELED": DelegationStatus.CANCELED,
+    "TASK_STATE_REJECTED": DelegationStatus.REJECTED,
+}
+_SENSITIVE_PARTS = ("key", "token", "secret", "authorization", "password")
+
+
+def _redact_outbound(value: Any, key: str = "") -> Any:
+    if key and any(part in key.casefold() for part in _SENSITIVE_PARTS):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            str(name): _redact_outbound(item, str(name))
+            for name, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_outbound(item) for item in value]
+    return value
+
+
+class A2ARemoteExecutor:
+    def __init__(
+        self,
+        repository: Any,
+        registration: RemoteAgentRegistration,
+        client: A2AHTTPClient,
+        *,
+        tracer: Any | None = None,
+        limits: A2ALimits | None = None,
+        clock: Any = time.monotonic,
+        sleep: Any = time.sleep,
+    ) -> None:
+        self.repository = repository
+        self.registration = registration
+        self.client = client
+        self.tracer = tracer
+        self.limits = limits or client.limits
+        self._clock = clock
+        self._sleep = sleep
+
+    def delegate(
+        self,
+        task: Task,
+        context: dict[str, Any],
+        *,
+        attempt_no: int | None = None,
+    ) -> RemoteExecution:
+        started = self._clock()
+        number = attempt_no or len(
+            self.repository.list_reviews(task.goal_id, task.task_id)
+        ) + 1
+        existing = self.repository.get_attempt_delegation(
+            task.goal_id,
+            task.task_id,
+            number,
+            self.registration.agent_id,
+        )
+        if existing is not None:
+            return self._resume(existing, started)
+
+        payload = self._build_payload(task, context)
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        if len(encoded) > self.limits.max_request_bytes:
+            raise A2AProtocolError("A2A delegation payload exceeds size limit")
+        delegation = DelegationRecord.create(
+            task.goal_id,
+            task.task_id,
+            number,
+            self.registration,
+            payload["message"]["messageId"],
+            hashlib.sha256(encoded).hexdigest(),
+        )
+        self.repository.save_delegation(delegation)
+        delegation = delegation.advance(DelegationStatus.SUBMITTING)
+        self.repository.save_delegation(delegation)
+
+        try:
+            with self._span(delegation, "a2a.send", operation="send"):
+                response = self.client.send_message(
+                    self.registration.interface_url,
+                    payload,
+                    tenant=self.registration.tenant,
+                )
+        except A2AAmbiguousSubmission:
+            unknown = delegation.advance(
+                DelegationStatus.UNKNOWN, error_category="ambiguous_send"
+            )
+            self.repository.save_delegation(unknown)
+            raise
+        except A2AHTTPError:
+            failed = delegation.advance(
+                DelegationStatus.FAILED, error_category="send_rejected"
+            )
+            self.repository.save_delegation(failed)
+            raise
+
+        delegation = self._apply_response(delegation, response)
+        if delegation.status == DelegationStatus.COMPLETED:
+            return self._execution(delegation, started)
+        if delegation.status != DelegationStatus.ACCEPTED:
+            self._raise_terminal(delegation)
+        return self._poll(delegation, started)
+
+    def cancel(self, delegation_id: str, decided_by: str) -> DelegationRecord:
+        if not decided_by.strip():
+            raise ValueError("cancellation identity must not be empty")
+        delegation = self.repository.get_delegation(delegation_id)
+        if delegation is None:
+            raise KeyError(f"delegation not found: {delegation_id}")
+        if delegation.status == DelegationStatus.COMPLETED:
+            return delegation
+        if delegation.status not in {
+            DelegationStatus.ACCEPTED,
+            DelegationStatus.INTERRUPTED,
+        } or not delegation.remote_task_id:
+            raise A2AProtocolError("delegation has no cancelable known remote task")
+        return self._cancel_known_task(delegation, decided_by.strip())
+
+    def _resume(self, delegation: DelegationRecord, started: float) -> RemoteExecution:
+        if delegation.model_id != self.registration.model_id:
+            raise A2AProtocolError("remote registration identity changed")
+        if delegation.status == DelegationStatus.COMPLETED:
+            return self._execution(delegation, started)
+        if delegation.status == DelegationStatus.PREPARED:
+            raise A2AProtocolError("prepared delegation cannot be reconstructed safely")
+        if delegation.status == DelegationStatus.SUBMITTING:
+            unknown = delegation.advance(
+                DelegationStatus.UNKNOWN, error_category="interrupted_send"
+            )
+            self.repository.save_delegation(unknown)
+            raise A2AProtocolError("delegation submission outcome is unknown")
+        if delegation.status == DelegationStatus.UNKNOWN:
+            raise A2AProtocolError("delegation submission outcome is unknown")
+        if delegation.status == DelegationStatus.ACCEPTED:
+            return self._poll(delegation, started)
+        self._raise_terminal(delegation)
+        raise AssertionError("unreachable")
+
+    def _poll(self, delegation: DelegationRecord, started: float) -> RemoteExecution:
+        while (
+            delegation.poll_count < self.limits.max_polls
+            and self._clock() - started < self.limits.total_timeout
+        ):
+            if self.limits.poll_interval:
+                self._sleep(self.limits.poll_interval)
+            delegation = delegation.advance(
+                DelegationStatus.ACCEPTED,
+                remote_task_id=delegation.remote_task_id,
+                increment_poll=True,
+            )
+            self.repository.save_delegation(delegation)
+            try:
+                with self._span(
+                    delegation,
+                    "a2a.get",
+                    operation="get",
+                    poll_count=delegation.poll_count,
+                ):
+                    response = self.client.get_task(
+                        self.registration.interface_url,
+                        delegation.remote_task_id,
+                        tenant=self.registration.tenant,
+                    )
+            except A2AHTTPError:
+                continue
+            delegation = self._apply_response(delegation, response)
+            if delegation.status == DelegationStatus.COMPLETED:
+                return self._execution(delegation, started)
+            if delegation.status != DelegationStatus.ACCEPTED:
+                self._raise_terminal(delegation)
+
+        self._cancel_known_task(delegation, "deadline")
+        raise A2AProtocolError("A2A delegation deadline or poll budget exhausted")
+
+    def _cancel_known_task(
+        self, delegation: DelegationRecord, decided_by: str
+    ) -> DelegationRecord:
+        try:
+            with self._span(delegation, "a2a.cancel", operation="cancel"):
+                response = self.client.cancel_task(
+                    self.registration.interface_url,
+                    delegation.remote_task_id,
+                    tenant=self.registration.tenant,
+                )
+            canceled = self._apply_response(
+                delegation, response, canceled_by=decided_by
+            )
+        except A2AError:
+            if delegation.status == DelegationStatus.ACCEPTED:
+                failed = delegation.advance(
+                    DelegationStatus.FAILED,
+                    error_category="cancel_failed",
+                )
+                self.repository.save_delegation(failed)
+            raise
+        if canceled.status not in {
+            DelegationStatus.CANCELED,
+            DelegationStatus.COMPLETED,
+        }:
+            failed = canceled.advance(
+                DelegationStatus.FAILED,
+                error_category="cancel_not_terminal",
+            )
+            self.repository.save_delegation(failed)
+            raise A2AProtocolError("remote cancellation did not reach a terminal state")
+        return canceled
+
+    def _apply_response(
+        self,
+        delegation: DelegationRecord,
+        response: dict[str, Any],
+        *,
+        canceled_by: str = "",
+    ) -> DelegationRecord:
+        try:
+            if isinstance(response.get("message"), dict):
+                content = self._normalize_parts(response["message"].get("parts"))
+                updated = delegation.advance(
+                    DelegationStatus.COMPLETED, result_content=content
+                )
+                self.repository.save_delegation(updated)
+                return updated
+            task = response.get("task")
+            if not isinstance(task, dict):
+                raise A2AProtocolError("A2A response has neither message nor task")
+            remote_task_id = task.get("id")
+            if not isinstance(remote_task_id, str) or not remote_task_id.strip():
+                raise A2AProtocolError("A2A task identity is missing")
+            if delegation.remote_task_id and remote_task_id != delegation.remote_task_id:
+                raise A2AProtocolError("A2A task identity does not match delegation")
+            status = task.get("status")
+            state = status.get("state") if isinstance(status, dict) else None
+            if not isinstance(state, str):
+                raise A2AProtocolError("A2A task state is missing")
+            if state in _ACTIVE_TASK_STATES:
+                updated = delegation.advance(
+                    DelegationStatus.ACCEPTED,
+                    remote_task_id=remote_task_id,
+                    remote_task_state=state,
+                )
+            elif state == "TASK_STATE_COMPLETED":
+                artifacts = task.get("artifacts")
+                if not isinstance(artifacts, list) or not artifacts:
+                    raise A2AProtocolError("completed A2A task has no artifacts")
+                parts = []
+                for artifact in artifacts:
+                    if not isinstance(artifact, dict):
+                        raise A2AProtocolError("A2A artifact is invalid")
+                    artifact_parts = artifact.get("parts")
+                    if not isinstance(artifact_parts, list):
+                        raise A2AProtocolError("A2A artifact parts are invalid")
+                    parts.extend(artifact_parts)
+                content = self._normalize_parts(parts)
+                updated = delegation.advance(
+                    DelegationStatus.COMPLETED,
+                    remote_task_id=remote_task_id,
+                    remote_task_state=state,
+                    result_content=content,
+                )
+            elif state in _INTERRUPTED_TASK_STATES:
+                updated = delegation.advance(
+                    DelegationStatus.INTERRUPTED,
+                    remote_task_id=remote_task_id,
+                    remote_task_state=state,
+                    error_category="remote_interrupted",
+                )
+            elif state in _TERMINAL_STATUS_BY_TASK_STATE:
+                terminal = _TERMINAL_STATUS_BY_TASK_STATE[state]
+                updated = delegation.advance(
+                    terminal,
+                    remote_task_id=remote_task_id,
+                    remote_task_state=state,
+                    error_category=f"remote_{terminal.value}",
+                    canceled_by=canceled_by if terminal == DelegationStatus.CANCELED else "",
+                )
+            else:
+                raise A2AProtocolError("A2A task state is unsupported")
+            self.repository.save_delegation(updated)
+            return updated
+        except A2AProtocolError:
+            current = self.repository.get_delegation(delegation.delegation_id) or delegation
+            if current.status in {
+                DelegationStatus.PREPARED,
+                DelegationStatus.SUBMITTING,
+                DelegationStatus.ACCEPTED,
+            }:
+                failed = current.advance(
+                    DelegationStatus.FAILED, error_category="invalid_remote_response"
+                )
+                self.repository.save_delegation(failed)
+            raise
+
+    def _normalize_parts(self, parts: Any) -> str:
+        if not isinstance(parts, list) or not parts:
+            raise A2AProtocolError("A2A result parts must not be empty")
+        normalized: list[str] = []
+        for part in parts:
+            if not isinstance(part, dict):
+                raise A2AProtocolError("A2A result part is invalid")
+            if "text" in part and isinstance(part["text"], str):
+                if part["text"].strip():
+                    normalized.append(part["text"].strip())
+                continue
+            if "data" in part:
+                normalized.append(
+                    json.dumps(
+                        part["data"],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
+                continue
+            raise A2AProtocolError("A2A result part type is unsupported")
+        content = "\n".join(item for item in normalized if item).strip()
+        if not content:
+            raise A2AProtocolError("A2A result is empty")
+        if len(content.encode("utf-8")) > self.limits.max_result_bytes:
+            raise A2AProtocolError("A2A result size exceeds limit")
+        return content
+
+    def _build_payload(self, task: Task, context: dict[str, Any]) -> dict[str, Any]:
+        skill_id = self.registration.skill_by_task_type.get(task.task_type)
+        if not skill_id:
+            raise A2AProtocolError("remote agent has no pinned skill for task type")
+        allowed_context: dict[str, Any] = {}
+        for section in self.registration.allowed_context_sections:
+            if section == "goal":
+                allowed_context[section] = {"goal_id": task.goal_id}
+            elif section == "task_context":
+                allowed_context[section] = task.context
+            elif section in context:
+                allowed_context[section] = context[section]
+        data = {
+            "skillId": skill_id,
+            "task": {
+                "description": task.description,
+                "acceptanceCriteria": task.acceptance_criteria,
+            },
+            "context": _redact_outbound(allowed_context),
+        }
+        return {
+            "message": {
+                "messageId": f"message-{uuid4().hex}",
+                "role": "ROLE_USER",
+                "parts": [{"data": data}],
+            },
+            "returnImmediately": True,
+        }
+
+    def _execution(self, delegation: DelegationRecord, started: float) -> RemoteExecution:
+        return RemoteExecution(
+            content=delegation.result_content,
+            delegation_id=delegation.delegation_id,
+            card_sha256=delegation.card_sha256,
+            remote_task_id=delegation.remote_task_id,
+            duration_ms=max(0.0, (self._clock() - started) * 1000.0),
+        )
+
+    def _raise_terminal(self, delegation: DelegationRecord) -> None:
+        if delegation.status == DelegationStatus.INTERRUPTED:
+            raise A2AProtocolError("remote delegation was interrupted")
+        raise A2AProtocolError(
+            f"remote delegation ended in {delegation.status.value} state"
+        )
+
+    def _span(
+        self,
+        delegation: DelegationRecord,
+        name: str,
+        **attributes: Any,
+    ) -> Any:
+        if self.tracer is None:
+            return nullcontext(None)
+        return self.tracer.span(
+            delegation.goal_id,
+            name,
+            kind="a2a",
+            task_id=delegation.task_id,
+            agent_id=delegation.agent_id,
+            attributes={
+                "delegation_id": delegation.delegation_id,
+                "card_sha256": delegation.card_sha256,
+                **attributes,
+            },
+        )

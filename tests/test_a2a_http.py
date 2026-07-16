@@ -83,6 +83,15 @@ class A2AHTTPClientTests(unittest.TestCase):
         self.assertNotIn("private-token", str(caught.exception))
         self.assertNotIn("remote detail", str(caught.exception))
 
+    def test_send_oversized_success_is_ambiguous(self):
+        with FakeA2AServer() as server:
+            server.send_body_override = b"{" + b"x" * 1024
+            with self.assertRaisesRegex(A2AAmbiguousSubmission, "ambiguous"):
+                self.client(limits=A2ALimits(max_response_bytes=128)).send_message(
+                    server.interface_url,
+                    {"message": {"messageId": "m1", "parts": [{"text": "hello"}]}},
+                )
+
 
 class A2ARegistrationTests(unittest.TestCase):
     def setUp(self):

@@ -1,5 +1,7 @@
 import json
+import socket
 import threading
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -20,6 +22,14 @@ class FakeA2AServer:
             }
         }
         self.send_body_override = None
+        self.close_send_without_response = False
+        self.task_responses = []
+        self.cancel_response = {
+            "task": {
+                "id": "task-1",
+                "status": {"state": "TASK_STATE_CANCELED"},
+            }
+        }
 
     def __enter__(self):
         owner = self
@@ -49,6 +59,15 @@ class FakeA2AServer:
                         owner.card_content_type,
                     )
                     return
+                path = urlsplit(self.path).path
+                if path.startswith("/a2a/tasks/"):
+                    response = (
+                        owner.task_responses.pop(0)
+                        if len(owner.task_responses) > 1
+                        else owner.task_responses[0]
+                    )
+                    owner._respond(self, 200, json.dumps(response).encode("utf-8"))
+                    return
                 owner._respond(self, 404, b'{"error":"missing"}')
 
             def do_POST(self):
@@ -56,12 +75,23 @@ class FakeA2AServer:
                 body = self.rfile.read(length)
                 owner._record(self, body)
                 if self.path == "/a2a/message:send":
+                    if owner.close_send_without_response:
+                        self.connection.shutdown(socket.SHUT_RDWR)
+                        self.connection.close()
+                        return
                     response = (
                         owner.send_body_override
                         if owner.send_body_override is not None
                         else json.dumps(owner.send_response).encode("utf-8")
                     )
                     owner._respond(self, owner.send_status, response)
+                    return
+                if self.path.startswith("/a2a/tasks/") and self.path.endswith(":cancel"):
+                    owner._respond(
+                        self,
+                        200,
+                        json.dumps(owner.cancel_response).encode("utf-8"),
+                    )
                     return
                 owner._respond(self, 404, b'{"error":"missing"}')
 
@@ -145,3 +175,17 @@ class FakeA2AServer:
         handler.end_headers()
         handler.wfile.write(body)
 
+    @property
+    def send_count(self):
+        return sum(item["path"] == "/a2a/message:send" for item in self.requests)
+
+    @property
+    def get_count(self):
+        return sum(
+            item["method"] == "GET" and item["path"].startswith("/a2a/tasks/")
+            for item in self.requests
+        )
+
+    @property
+    def cancel_count(self):
+        return sum(item["path"].endswith(":cancel") for item in self.requests)
