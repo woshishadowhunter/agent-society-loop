@@ -76,13 +76,28 @@ agent-society maintain owner/repository 123 \
 
 Publication has its own exact approval containing the base HEAD, branch policy, changed paths, workspace digest, checks, title, and final PR body. It stages only goal-owned paths and resumes idempotently through commit, push, and PR creation. It never merges or force-pushes.
 
+## Evaluate and promote agent upgrades
+
+Version 0.5 adds a reproducible champion/challenger gate. Evaluation persists every case result and produces a recommendation; it never changes production routing. Promotion is a separate operator action:
+
+```bash
+agent-society evaluate examples/evaluation-spec.json --db evolution.db --json
+agent-society evaluations RUN_ID --db evolution.db --json
+agent-society promote RUN_ID --by operator --db evolution.db --json
+agent-society deployments --db evolution.db --json
+```
+
+The default policy requires at least five cases, no critical failure, no pass-rate loss, a mean-score gain, bounded per-case regression, and bounded p95 latency. Agent and model identities are rechecked at promotion. Once deployed, the approved champion is mandatory for that task type; an unavailable champion blocks instead of silently falling back. See [Evaluation and promotion](docs/evaluation.md).
+
+External tools can be adapted from stable MCP `2025-11-25` stdio servers. Discovery is not authority: only tools with an operator-supplied local risk classification are registered, and every adapted call still uses the existing schema, approval, tracing, and budget controls. See [MCP tool integration](docs/mcp.md).
+
 ## Architecture
 
 ```mermaid
 flowchart LR
     G[Goal lifecycle] --> O[Orchestrator / outer loop]
     O --> P[Planner]
-    O --> S[Performance selector]
+    O --> S[Deployment gate / performance selector]
     S --> W[Specialist worker]
     W --> R[Reviewer / inner loop]
     R -->|FAIL + defects| W
@@ -133,6 +148,10 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society status GOAL_ID` | Inspect goal, tasks, reviews, and artifacts |
 | `agent-society events GOAL_ID` | Read the ordered audit trail |
 | `agent-society agents` | Inspect agent profiles and performance |
+| `agent-society evaluate SPEC.json` | Compare a challenger with a reproducible benchmark |
+| `agent-society evaluations [RUN_ID]` | Inspect evaluation decisions and raw case outcomes |
+| `agent-society promote RUN_ID --by NAME` | Explicitly promote a recommended challenger |
+| `agent-society deployments` | Inspect active task-type champions |
 | `agent-society maintain OWNER/REPO ISSUE` | Produce a reviewed, read-only maintenance proposal |
 | `agent-society maintain ... --apply --check NAME=COMMAND` | Apply approved local changes and run approved named checks |
 | `agent-society maintain ... --publish` | Publish a verified allowed branch as an approved pull request |
@@ -170,13 +189,13 @@ Use `ModelPlanner`, `ModelWorker`, and `ModelReviewer` from `model_agents.py` wh
 
 ## What self-evolution means here
 
-After each reviewed attempt, the runtime updates performance for `(agent_id, task_type)`. Future routing combines success rate, review score, latency, and sample confidence. The score breakdown is recorded in the event log.
+After each reviewed attempt, the runtime updates performance for `(agent_id, task_type)`. Task types without an active deployment use success rate, review score, latency, and sample confidence. Agent upgrades can additionally be compared on an immutable benchmark and promoted through an explicit champion/challenger gate.
 
 The runtime never approves its own mutations and does **not** rewrite prompts, acceptance criteria, or safety policy. Guarded maintenance may change the selected workspace only through exact, durable approvals. That boundary keeps changes reviewable and prevents a weak result from redefining what “good” means.
 
 ## Current boundaries
 
-Version 0.4 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. It cannot delete or rename files, install dependencies, merge, force-push, or modify branch protection. Distributed workers, concurrent scheduling, MCP/A2A adapters, champion/challenger evaluation, and a web UI remain future work.
+Version 0.5 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. MCP support is limited to stable stdio tool discovery and calls; it does not include HTTP transport, resources, sampling, elicitation, or experimental tasks. The runtime cannot delete or rename files, install dependencies, merge, force-push, or modify branch protection. Distributed workers, A2A delegation, concurrent scheduling, online learning, and a web console remain future work.
 
 ## Development
 

@@ -14,8 +14,18 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .deterministic import CriteriaReviewer, build_demo_engine
-from .domain import AgentProfile, Goal, RunBudget, Task
+from .domain import (
+    AgentProfile,
+    BenchmarkCase,
+    CandidateExecution,
+    CandidateIdentity,
+    CaseEvaluation,
+    Goal,
+    RunBudget,
+    Task,
+)
 from .engine import LoopEngine, resolve_approval
+from .evaluation import BenchmarkEvaluator, PromotionPolicy
 from .github import GitHubIssueClient, GitHubPullRequestClient
 from .maintenance import (
     build_maintenance_engine,
@@ -167,6 +177,105 @@ def _provider_from_environment() -> OpenAICompatibleProvider:
     )
 
 
+class _ObservedBenchmarkRunner:
+    def __init__(self, results: dict[tuple[str, str], dict[str, Any]]):
+        self.results = results
+
+    def __call__(
+        self, candidate: CandidateIdentity, case: BenchmarkCase
+    ) -> CandidateExecution:
+        result = self.results[(case.case_id, candidate.agent_id)]
+        return CandidateExecution(result, float(result["duration_ms"]))
+
+
+def _score_observed_result(case: BenchmarkCase, output: Any) -> CaseEvaluation:
+    if not isinstance(output, dict):
+        raise ValueError("observed candidate result must be an object")
+    return CaseEvaluation(bool(output["passed"]), float(output["score"]))
+
+
+def _load_evaluation_spec(
+    path: str,
+) -> tuple[
+    tuple[BenchmarkCase, ...],
+    CandidateIdentity,
+    CandidateIdentity,
+    dict[tuple[str, str], dict[str, Any]],
+]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid evaluation spec: {error}") from error
+    if not isinstance(data, dict) or not isinstance(data.get("cases"), list):
+        raise ValueError("invalid evaluation spec: cases must be a list")
+    if not data["cases"]:
+        raise ValueError("invalid evaluation spec: benchmark needs at least one case")
+    task_type = str(data.get("task_type", "")).strip()
+    identities = []
+    for role in ("champion", "challenger"):
+        value = data.get(role)
+        if not isinstance(value, dict):
+            raise ValueError(f"invalid evaluation spec: {role} must be an object")
+        identities.append(
+            CandidateIdentity(
+                str(value.get("agent_id", "")), str(value.get("model_id", ""))
+            )
+        )
+    champion, challenger = identities
+    benchmark: list[BenchmarkCase] = []
+    results: dict[tuple[str, str], dict[str, Any]] = {}
+    for index, value in enumerate(data["cases"], start=1):
+        if not isinstance(value, dict):
+            raise ValueError(f"invalid evaluation spec: case {index} must be an object")
+        case = BenchmarkCase.create(
+            str(value.get("case_id", "")),
+            task_type,
+            dict(value.get("input", {})),
+            dict(value.get("acceptance_criteria", {})),
+            context=dict(value.get("context", {})),
+            critical=bool(value.get("critical", False)),
+        )
+        observed = value.get("results")
+        if not isinstance(observed, dict):
+            raise ValueError(f"invalid evaluation spec: case {case.case_id} needs results")
+        for candidate in (champion, challenger):
+            result = observed.get(candidate.agent_id)
+            if (
+                not isinstance(result, dict)
+                or not isinstance(result.get("passed"), bool)
+                or not isinstance(result.get("score"), (int, float))
+                or not isinstance(result.get("duration_ms"), (int, float))
+            ):
+                raise ValueError(
+                    f"invalid evaluation result for {case.case_id}/{candidate.agent_id}"
+                )
+            CaseEvaluation(result["passed"], float(result["score"]))
+            CandidateExecution(result, float(result["duration_ms"]))
+            results[(case.case_id, candidate.agent_id)] = dict(result)
+        benchmark.append(case)
+    return tuple(benchmark), champion, challenger, results
+
+
+def _ensure_evaluation_agent(
+    repository: SQLiteRepository,
+    candidate: CandidateIdentity,
+    task_type: str,
+) -> None:
+    existing = repository.get_agent(candidate.agent_id)
+    if existing is None:
+        repository.save_agent(
+            AgentProfile(candidate.agent_id, "worker", candidate.model_id, (task_type,))
+        )
+        return
+    if (
+        not existing.enabled
+        or existing.role != "worker"
+        or existing.model_id != candidate.model_id
+        or not ("*" in existing.task_types or task_type in existing.task_types)
+    ):
+        raise ValueError(f"candidate identity conflicts with agent {candidate.agent_id}")
+
+
 def _maintenance_goal_id(repository: str, issue: int) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", repository.casefold()).strip("-")
     return f"maintain-{slug}-{issue}"
@@ -229,6 +338,34 @@ def build_parser() -> argparse.ArgumentParser:
     agents = commands.add_parser("agents", help="inspect agents and social memory")
     agents.add_argument("--db", default="agent-society.db")
     agents.add_argument("--json", action="store_true")
+
+    evaluate = commands.add_parser(
+        "evaluate", help="evaluate a challenger against a benchmark"
+    )
+    evaluate.add_argument("spec")
+    evaluate.add_argument("--db", default="agent-society.db")
+    evaluate.add_argument("--json", action="store_true")
+
+    evaluations = commands.add_parser(
+        "evaluations", help="inspect evaluation runs and case outcomes"
+    )
+    evaluations.add_argument("run_id", nargs="?")
+    evaluations.add_argument("--db", default="agent-society.db")
+    evaluations.add_argument("--json", action="store_true")
+
+    promote = commands.add_parser(
+        "promote", help="explicitly promote a recommended challenger"
+    )
+    promote.add_argument("run_id")
+    promote.add_argument("--by", required=True)
+    promote.add_argument("--db", default="agent-society.db")
+    promote.add_argument("--json", action="store_true")
+
+    deployments = commands.add_parser(
+        "deployments", help="inspect active task-type champions"
+    )
+    deployments.add_argument("--db", default="agent-society.db")
+    deployments.add_argument("--json", action="store_true")
 
     maintain = commands.add_parser(
         "maintain", help="inspect a GitHub issue and produce a reviewed proposal"
@@ -361,6 +498,54 @@ def main(argv: Sequence[str] | None = None) -> int:
                 for agent in repository.list_agents()
             ]
             _emit(value, args.json, f"{len(value)} registered agents")
+            return 0
+
+        if args.command == "evaluate":
+            benchmark, champion, challenger, results = _load_evaluation_spec(args.spec)
+            _ensure_evaluation_agent(repository, champion, benchmark[0].task_type)
+            _ensure_evaluation_agent(repository, challenger, benchmark[0].task_type)
+            value = BenchmarkEvaluator(
+                repository,
+                _ObservedBenchmarkRunner(results),
+                _score_observed_result,
+                PromotionPolicy(),
+            ).evaluate(benchmark, champion, challenger)
+            _emit(
+                value,
+                args.json,
+                f"Evaluation {value.run_id}: "
+                f"{'recommended' if value.recommended else 'rejected'}",
+            )
+            return 0 if value.recommended else 1
+
+        if args.command == "evaluations":
+            if args.run_id:
+                run = repository.get_evaluation_run(args.run_id)
+                if run is None:
+                    raise KeyError(f"evaluation run not found: {args.run_id}")
+                value = {
+                    "run": run,
+                    "outcomes": repository.list_evaluation_outcomes(args.run_id),
+                }
+                human = f"Evaluation {run.run_id}: {run.status.value}"
+            else:
+                value = repository.list_evaluation_runs()
+                human = f"{len(value)} evaluation runs"
+            _emit(value, args.json, human)
+            return 0
+
+        if args.command == "promote":
+            value = repository.promote_evaluation(args.run_id, args.by)
+            _emit(
+                value,
+                args.json,
+                f"Deployed {value.champion_agent_id} for {value.task_type}",
+            )
+            return 0
+
+        if args.command == "deployments":
+            value = repository.list_deployments()
+            _emit(value, args.json, f"{len(value)} active deployments")
             return 0
 
         if args.command == "maintain":

@@ -185,9 +185,35 @@ class LoopEngine:
 
             task = ready[0]
             try:
+                candidates = self.repository.list_agents()
+                deployment = self.repository.get_deployment(task.task_type)
+                if deployment is not None:
+                    candidates = [
+                        agent
+                        for agent in candidates
+                        if agent.agent_id == deployment.champion_agent_id
+                        and agent.model_id == deployment.champion_model_id
+                    ]
+                    eligible = [
+                        agent
+                        for agent in candidates
+                        if agent.enabled
+                        and agent.role == task.assigned_role
+                        and (
+                            "*" in agent.task_types
+                            or task.task_type in agent.task_types
+                        )
+                        and agent.agent_id in self.workers
+                    ]
+                    if not eligible:
+                        raise LookupError(
+                            "deployed champion unavailable for task type "
+                            f"{task.task_type}"
+                        )
+                    candidates = eligible
                 decision = self.selector.select(
                     task,
-                    self.repository.list_agents(),
+                    candidates,
                     self.repository.list_performance(),
                 )
                 worker = self.workers[decision.agent_id]
@@ -211,6 +237,9 @@ class LoopEngine:
                     "attempt_no": attempt_no,
                     "agent_id": decision.agent_id,
                     "selection": decision.considered,
+                    "deployment_source_run_id": (
+                        deployment.source_run_id if deployment is not None else ""
+                    ),
                 },
             )
             started = perf_counter()
