@@ -91,6 +91,19 @@ JSON 文件可以定义目标、任务依赖、初始产出、返工产出和验
 
 完整字段说明见 [目标规范](docs/goal-spec.md)。
 
+## 用真实模型检查 GitHub Issue
+
+v0.2 内置严格 JSON 规划、执行和质检 Agent，以及有边界的只读仓库工具。配置 OpenAI-compatible 模型后，可以运行一次经过质检的维护分析：
+
+```bash
+export MODEL_API_KEY="..."
+export MODEL_ID="your-model"
+agent-society maintain owner/repository 123 --workspace . --db maintain.db --json
+agent-society traces maintain-owner-repository-123 --db maintain.db --json
+```
+
+这个工作流会读取公开 Issue，在 `--workspace` 范围内列举、搜索和读取 UTF-8 文件，并生成维护建议。默认不会修改文件、执行命令或创建 Pull Request。集成者以后注册的写入和执行工具，也必须先获得持久化审批才能调用。
+
 ## 常用命令
 
 | 命令 | 用途 |
@@ -100,6 +113,11 @@ JSON 文件可以定义目标、任务依赖、初始产出、返工产出和验
 | `agent-society status GOAL_ID` | 查看目标、任务、质检和产物 |
 | `agent-society events GOAL_ID` | 查看有序审计事件 |
 | `agent-society agents` | 查看 Agent 档案和绩效 |
+| `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
+| `agent-society traces GOAL_ID` | 查看模型与工具的关联 Trace |
+| `agent-society approvals GOAL_ID` | 查看待处理及已处理审批 |
+| `agent-society approve APPROVAL_ID` | 批准暂停中的写入或执行工具 |
+| `agent-society reject APPROVAL_ID` | 拒绝暂停中的写入或执行工具 |
 | `agent-society knowledge add` | 添加长期种子知识 |
 | `agent-society knowledge search` | 检索长期知识 |
 
@@ -121,7 +139,7 @@ provider = OpenAICompatibleProvider(
 )
 ```
 
-它只是模型通信边界，不会自动替换现有 Agent。实际接入时，应实现 `ports.py` 中的 `Planner`、`Worker` 或 `Reviewer` 协议，把模型输出严格解析为任务和质检数据，再注入 `LoopEngine`。API Key 只从运行环境读取，不会写入数据库或日志。
+需要严格 JSON 角色适配时，可以直接使用 `model_agents.py` 中的 `ModelPlanner`、`ModelWorker` 和 `ModelReviewer`。`ModelWorker` 每轮只接受一次结构化工具请求或最终产物，并使用独立的工具步数预算；所有行动都必须经过受策略控制的工具运行时。API Key 只从运行环境读取，不会写入数据库或日志。
 
 ## “自进化”的准确含义
 
@@ -131,7 +149,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.1 在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库；JSON 运行器使用确定性产出。分布式队列、并发调度、真实模型 Agent 套件和 Web 控制台属于后续扩展方向，不作为当前能力宣传。
+v0.2 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。GitHub 维护工作流刻意保持只读：应用补丁、执行命令、创建 Pull Request、分布式队列、并发调度、MCP/A2A 适配器和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

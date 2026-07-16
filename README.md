@@ -43,6 +43,19 @@ agent-society agents --db demo.db --json
 
 The bundled scenario deliberately produces an incomplete first market report. The reviewer rejects it, the defect enters short-term memory, and the specialist repairs the report on its second attempt.
 
+## Inspect a GitHub issue with real model agents
+
+Version 0.2 includes strict JSON planner, worker, and reviewer adapters plus bounded read-only repository tools. Configure an OpenAI-compatible endpoint and run a reviewed maintenance intake:
+
+```bash
+export MODEL_API_KEY="..."
+export MODEL_ID="your-model"
+agent-society maintain owner/repository 123 --workspace . --db maintain.db --json
+agent-society traces maintain-owner-repository-123 --db maintain.db --json
+```
+
+The workflow reads the public issue, lists/searches/reads UTF-8 files under `--workspace`, and produces a reviewed maintenance proposal. It does not modify files, execute commands, or create a pull request. Write and execute tools added by integrators require a durable approval before invocation.
+
 ## Architecture
 
 ```mermaid
@@ -100,6 +113,11 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society status GOAL_ID` | Inspect goal, tasks, reviews, and artifacts |
 | `agent-society events GOAL_ID` | Read the ordered audit trail |
 | `agent-society agents` | Inspect agent profiles and performance |
+| `agent-society maintain OWNER/REPO ISSUE` | Produce a reviewed, read-only maintenance proposal |
+| `agent-society traces GOAL_ID` | Inspect linked model and tool trace spans |
+| `agent-society approvals GOAL_ID` | Inspect pending and resolved tool approvals |
+| `agent-society approve APPROVAL_ID` | Approve a paused write or execute tool call |
+| `agent-society reject APPROVAL_ID` | Reject a paused write or execute tool call |
 | `agent-society knowledge add` | Add long-term seed knowledge |
 | `agent-society knowledge search` | Retrieve relevant seed knowledge |
 
@@ -126,7 +144,7 @@ text = provider.complete([
 ])
 ```
 
-The provider is an integration boundary, not an automatic replacement for the deterministic workers. Implement the `Planner`, `Worker`, or `Reviewer` protocols in `ports.py`, parse model output into the typed contracts, and inject the adapter into `LoopEngine`.
+Use `ModelPlanner`, `ModelWorker`, and `ModelReviewer` from `model_agents.py` when strict JSON role adapters are appropriate. `ModelWorker` accepts only one structured tool call or final artifact per turn, applies a separate tool-step budget, and delegates every action to the policy-controlled tool runtime.
 
 ## What self-evolution means here
 
@@ -136,7 +154,7 @@ The runtime does **not** rewrite its own source code, prompts, acceptance criter
 
 ## Current boundaries
 
-Version 0.1 runs tasks sequentially in one process. It uses tagged lexical retrieval rather than embeddings, and the bundled JSON runner uses deterministic outputs. Distributed workers, provider-backed agent adapters, concurrent scheduling, and a web UI are future extension areas, not current claims.
+Version 0.2 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. The GitHub maintenance workflow is deliberately read-only: patch application, command execution, pull-request creation, distributed workers, concurrent scheduling, MCP/A2A adapters, and a web UI remain future work.
 
 ## Development
 

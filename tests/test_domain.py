@@ -2,6 +2,7 @@ import unittest
 from dataclasses import replace
 
 from agent_society_loop.domain import (
+    ApprovalRequest,
     Goal,
     GoalStatus,
     Review,
@@ -14,6 +15,29 @@ from agent_society_loop.domain import (
 
 
 class DomainValidationTests(unittest.TestCase):
+    def test_goal_can_pause_and_resume(self):
+        goal = replace(
+            Goal.create("Ship a release", "Build and publish it"),
+            status=GoalStatus.RUNNING,
+        )
+
+        paused = transition_goal(goal, GoalStatus.PAUSED, "approval required")
+        resumed = transition_goal(paused, GoalStatus.RUNNING)
+
+        self.assertEqual(paused.status, GoalStatus.PAUSED)
+        self.assertEqual(resumed.status, GoalStatus.RUNNING)
+
+    def test_approval_fingerprint_is_stable_for_argument_order(self):
+        first = ApprovalRequest.create(
+            "g", "t", "write_file", {"path": "a", "text": "x"}, "write"
+        )
+        second = ApprovalRequest.create(
+            "g", "t", "write_file", {"text": "x", "path": "a"}, "write"
+        )
+
+        self.assertEqual(first.fingerprint, second.fingerprint)
+        self.assertEqual(first.approval_id, second.approval_id)
+
     def test_review_score_must_be_between_zero_and_one_hundred(self):
         with self.assertRaisesRegex(ValueError, "score"):
             Review.create("g1", "t1", 1, Verdict.FAIL, 101, [], "invalid")

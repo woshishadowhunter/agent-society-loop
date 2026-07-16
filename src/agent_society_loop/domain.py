@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -13,10 +15,24 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _redact_sensitive(value: Any, key: str = "") -> Any:
+    sensitive = ("key", "token", "secret", "authorization", "password")
+    if key and any(part in key.casefold() for part in sensitive):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            name: _redact_sensitive(item, str(name)) for name, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
+
 class GoalStatus(str, Enum):
     CREATED = "created"
     PLANNING = "planning"
     RUNNING = "running"
+    PAUSED = "paused"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     BLOCKED = "blocked"
@@ -33,6 +49,24 @@ class TaskStatus(str, Enum):
 class Verdict(str, Enum):
     PASS = "PASS"
     FAIL = "FAIL"
+
+
+class ToolRisk(str, Enum):
+    READ = "read"
+    WRITE = "write"
+    EXECUTE = "execute"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class SpanStatus(str, Enum):
+    RUNNING = "running"
+    OK = "ok"
+    ERROR = "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -246,6 +280,146 @@ class Event:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalRequest:
+    approval_id: str
+    fingerprint: str
+    goal_id: str
+    task_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    reason: str
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    requested_at: str = field(default_factory=utc_now)
+    decided_at: str = ""
+    decided_by: str = ""
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        reason: str,
+    ) -> ApprovalRequest:
+        for name, value in (
+            ("goal_id", goal_id),
+            ("task_id", task_id),
+            ("tool_name", tool_name),
+            ("reason", reason),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must not be empty")
+        canonical = json.dumps(
+            {
+                "goal_id": goal_id,
+                "task_id": task_id,
+                "tool_name": tool_name,
+                "arguments": arguments,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        fingerprint = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return cls(
+            approval_id=f"approval-{fingerprint[:16]}",
+            fingerprint=fingerprint,
+            goal_id=goal_id,
+            task_id=task_id,
+            tool_name=tool_name,
+            arguments=_redact_sensitive(arguments),
+            reason=reason.strip(),
+        )
+
+    def resolve(self, status: ApprovalStatus, decided_by: str) -> ApprovalRequest:
+        if self.status != ApprovalStatus.PENDING:
+            raise ValueError("approval request is already resolved")
+        if status not in {ApprovalStatus.APPROVED, ApprovalStatus.REJECTED}:
+            raise ValueError("approval resolution must be approved or rejected")
+        if not decided_by.strip():
+            raise ValueError("decided_by must not be empty")
+        return replace(
+            self,
+            status=status,
+            decided_at=utc_now(),
+            decided_by=decided_by.strip(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TraceSpan:
+    span_id: str
+    trace_id: str
+    goal_id: str
+    task_id: str | None
+    agent_id: str | None
+    parent_span_id: str | None
+    kind: str
+    name: str
+    status: SpanStatus
+    started_at: str
+    ended_at: str = ""
+    duration_ms: float = 0.0
+    attributes: dict[str, Any] = field(default_factory=dict)
+    error_category: str = ""
+
+    @classmethod
+    def start(
+        cls,
+        goal_id: str,
+        task_id: str | None,
+        agent_id: str | None,
+        kind: str,
+        name: str,
+        *,
+        trace_id: str | None = None,
+        parent_span_id: str | None = None,
+        attributes: dict[str, Any] | None = None,
+    ) -> TraceSpan:
+        if not goal_id.strip() or not kind.strip() or not name.strip():
+            raise ValueError("goal_id, kind, and name must not be empty")
+        return cls(
+            span_id=f"span-{uuid4().hex[:16]}",
+            trace_id=trace_id or goal_id,
+            goal_id=goal_id,
+            task_id=task_id,
+            agent_id=agent_id,
+            parent_span_id=parent_span_id,
+            kind=kind.strip(),
+            name=name.strip(),
+            status=SpanStatus.RUNNING,
+            started_at=utc_now(),
+            attributes=dict(attributes or {}),
+        )
+
+    def finish(
+        self,
+        status: SpanStatus,
+        *,
+        error_category: str = "",
+        attributes: dict[str, Any] | None = None,
+    ) -> TraceSpan:
+        if self.status != SpanStatus.RUNNING:
+            raise ValueError("trace span is already finished")
+        if status == SpanStatus.RUNNING:
+            raise ValueError("finished trace span cannot remain running")
+        ended_at = utc_now()
+        started = datetime.fromisoformat(self.started_at)
+        ended = datetime.fromisoformat(ended_at)
+        merged = dict(self.attributes)
+        merged.update(attributes or {})
+        return replace(
+            self,
+            status=status,
+            ended_at=ended_at,
+            duration_ms=max(0.0, (ended - started).total_seconds() * 1000.0),
+            attributes=merged,
+            error_category=error_category,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AgentProfile:
     agent_id: str
     role: str
@@ -328,8 +502,9 @@ _GOAL_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
     GoalStatus.CREATED: frozenset({GoalStatus.PLANNING}),
     GoalStatus.PLANNING: frozenset({GoalStatus.RUNNING, GoalStatus.FAILED}),
     GoalStatus.RUNNING: frozenset(
-        {GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}
+        {GoalStatus.PAUSED, GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}
     ),
+    GoalStatus.PAUSED: frozenset({GoalStatus.RUNNING, GoalStatus.FAILED}),
     GoalStatus.SUCCEEDED: frozenset(),
     GoalStatus.FAILED: frozenset(),
     GoalStatus.BLOCKED: frozenset(),

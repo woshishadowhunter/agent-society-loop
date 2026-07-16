@@ -1,23 +1,80 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 import sqlite3
 
 from agent_society_loop.domain import (
     AgentProfile,
+    ApprovalRequest,
+    ApprovalStatus,
     Artifact,
     Attempt,
     Event,
     Goal,
+    GoalStatus,
     PerformanceRecord,
     Review,
     Task,
+    SpanStatus,
+    TraceSpan,
     Verdict,
 )
 from agent_society_loop.storage import SQLiteRepository
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
+    def test_approval_resolution_rolls_back_with_goal_and_events(self):
+        repository = SQLiteRepository(":memory:")
+        goal = replace(
+            Goal.create("Approval", "Resolve atomically", goal_id="approval"),
+            status=GoalStatus.PAUSED,
+        )
+        approval = ApprovalRequest.create(
+            goal.goal_id,
+            "task",
+            "write_file",
+            {"path": "candidate.txt"},
+            "write requires approval",
+        )
+        duplicate = Event.create(goal.goal_id, "approval.rejected", {})
+        repository.save_goal(goal)
+        repository.save_approval(approval)
+        repository.append_event(duplicate)
+        resolved = approval.resolve(ApprovalStatus.REJECTED, "operator")
+        failed = replace(goal, status=GoalStatus.FAILED, failure_reason="rejected")
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            repository.save_approval_resolution(resolved, [duplicate], failed)
+
+        self.assertEqual(
+            repository.get_approval(approval.approval_id).status,
+            ApprovalStatus.PENDING,
+        )
+        self.assertEqual(repository.get_goal(goal.goal_id).status, GoalStatus.PAUSED)
+        repository.close()
+
+    def test_approval_and_span_survive_database_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "society.db"
+            repository = SQLiteRepository(path)
+            approval = ApprovalRequest.create(
+                "goal", "task", "write_file", {"path": "a"}, "write"
+            )
+            span = TraceSpan.start(
+                "goal", "task", "agent", "tool", "write_file"
+            ).finish(SpanStatus.OK)
+
+            repository.save_approval(approval)
+            repository.save_span(span)
+            repository.close()
+
+            reopened = SQLiteRepository(path)
+            self.assertEqual(reopened.get_approval(approval.approval_id), approval)
+            self.assertEqual(reopened.list_approvals("goal"), [approval])
+            self.assertEqual(reopened.list_spans("goal"), [span])
+            reopened.close()
+
     def test_state_survives_database_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "society.db"
