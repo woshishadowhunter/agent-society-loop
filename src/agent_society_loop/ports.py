@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence, runtime_checkable
+from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from .domain import Artifact, Attempt, Event, Goal, PerformanceRecord, Review, Task
-from .scheduler import TaskClaim, WorkerSession
+from .scheduler import ClaimedTask, TaskClaim, WorkerSession
 
 
 class WorkerBlocked(RuntimeError):
@@ -88,6 +88,16 @@ class SchedulerRepository(Protocol):
         now: str,
         lease_seconds: int,
     ) -> TaskClaim | None: ...
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        session_id: str,
+        assignments: Mapping[str, str],
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> ClaimedTask | None: ...
 
     def renew_claim(
         self,

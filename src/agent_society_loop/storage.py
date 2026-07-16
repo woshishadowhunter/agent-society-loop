@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .domain import (
     AgentProfile,
@@ -47,6 +47,7 @@ from .domain import (
     WorkspaceSnapshot,
 )
 from .scheduler import (
+    ClaimedTask,
     ClaimStatus,
     StaleClaim,
     TaskClaim,
@@ -431,49 +432,127 @@ class SQLiteRepository:
             if active is not None:
                 return None
 
-            fence_row = self.connection.execute(
-                "SELECT last_token FROM task_claim_fences WHERE goal_id=? AND task_id=?",
-                (goal_id, task_id),
-            ).fetchone()
-            fencing_token = 1 if fence_row is None else int(fence_row["last_token"]) + 1
-            self.connection.execute(
-                "INSERT INTO task_claim_fences(goal_id, task_id, last_token) VALUES (?, ?, ?) "
-                "ON CONFLICT(goal_id, task_id) DO UPDATE SET last_token=excluded.last_token",
-                (goal_id, task_id, fencing_token),
-            )
-            claim = TaskClaim.create(
-                goal_id,
-                task_id,
+            claim, _ = self._create_claim_locked(
                 session,
+                task,
                 agent_id,
-                fencing_token,
                 now=now,
                 lease_seconds=lease_seconds,
             )
-            running = replace(
-                task, status=TaskStatus.RUNNING, assigned_agent_id=agent_id
-            )
-            self.connection.execute(
-                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
-                (_dump(asdict(running)), goal_id, task_id),
-            )
-            self.connection.execute(
-                "INSERT INTO task_claims(claim_id, goal_id, task_id, worker_id, "
-                "session_id, fencing_token, status, expires_at, payload) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    claim.claim_id,
-                    claim.goal_id,
-                    claim.task_id,
-                    claim.worker_id,
-                    claim.session_id,
-                    claim.fencing_token,
-                    claim.status.value,
-                    claim.expires_at,
-                    _dump(asdict(claim)),
-                ),
-            )
         return claim
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        session_id: str,
+        assignments: Mapping[str, str],
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> ClaimedTask | None:
+        normalized = {str(key).strip(): str(value).strip() for key, value in assignments.items()}
+        if not normalized or any(not key or not value for key, value in normalized.items()):
+            raise ValueError("assignments must map task types to agent identifiers")
+        with self._immediate_transaction():
+            session = self._require_worker_session_locked(worker_id, session_id, now)
+            if not set(normalized).issubset(session.capabilities):
+                raise ValueError("assignments must be within worker session capabilities")
+
+            running_goals = {
+                row["goal_id"]
+                for row in self.connection.execute(
+                    "SELECT goal_id, payload FROM goals ORDER BY goal_id"
+                ).fetchall()
+                if GoalStatus(_load(row["payload"])["status"]) == GoalStatus.RUNNING
+            }
+            rows = self.connection.execute(
+                "SELECT goal_id, task_id, payload FROM tasks ORDER BY goal_id, position, task_id"
+            ).fetchall()
+            tasks = [self._task_from_payload(row["payload"]) for row in rows]
+            statuses = {
+                (task.goal_id, task.task_id): task.status for task in tasks
+            }
+            for task in tasks:
+                if (
+                    task.goal_id not in running_goals
+                    or task.status != TaskStatus.PENDING
+                    or task.task_type not in normalized
+                    or any(
+                        statuses.get((task.goal_id, dependency_id))
+                        != TaskStatus.SUCCEEDED
+                        for dependency_id in task.dependencies
+                    )
+                ):
+                    continue
+                active = self.connection.execute(
+                    "SELECT 1 FROM task_claims "
+                    "WHERE goal_id=? AND task_id=? AND status='active'",
+                    (task.goal_id, task.task_id),
+                ).fetchone()
+                if active is not None:
+                    continue
+                claim, running = self._create_claim_locked(
+                    session,
+                    task,
+                    normalized[task.task_type],
+                    now=now,
+                    lease_seconds=lease_seconds,
+                )
+                return ClaimedTask(claim, running)
+        return None
+
+    def _create_claim_locked(
+        self,
+        session: WorkerSession,
+        task: Task,
+        agent_id: str,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> tuple[TaskClaim, Task]:
+        fence_row = self.connection.execute(
+            "SELECT last_token FROM task_claim_fences WHERE goal_id=? AND task_id=?",
+            (task.goal_id, task.task_id),
+        ).fetchone()
+        fencing_token = 1 if fence_row is None else int(fence_row["last_token"]) + 1
+        self.connection.execute(
+            "INSERT INTO task_claim_fences(goal_id, task_id, last_token) VALUES (?, ?, ?) "
+            "ON CONFLICT(goal_id, task_id) DO UPDATE SET last_token=excluded.last_token",
+            (task.goal_id, task.task_id, fencing_token),
+        )
+        claim = TaskClaim.create(
+            task.goal_id,
+            task.task_id,
+            session,
+            agent_id,
+            fencing_token,
+            now=now,
+            lease_seconds=lease_seconds,
+        )
+        running = replace(
+            task, status=TaskStatus.RUNNING, assigned_agent_id=agent_id
+        )
+        self.connection.execute(
+            "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+            (_dump(asdict(running)), task.goal_id, task.task_id),
+        )
+        self.connection.execute(
+            "INSERT INTO task_claims(claim_id, goal_id, task_id, worker_id, "
+            "session_id, fencing_token, status, expires_at, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                claim.claim_id,
+                claim.goal_id,
+                claim.task_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                claim.status.value,
+                claim.expires_at,
+                _dump(asdict(claim)),
+            ),
+        )
+        return claim, running
 
     def _require_claim_locked(
         self,

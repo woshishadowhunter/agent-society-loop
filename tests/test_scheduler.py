@@ -29,6 +29,7 @@ from agent_society_loop.scheduler import (
     validate_duration,
 )
 from agent_society_loop.storage import SQLiteRepository
+from tests.scheduler_conformance import ClaimNextTaskContract
 
 
 AT = "2026-07-16T00:00:00+00:00"
@@ -289,6 +290,19 @@ class SchedulerClaimTests(unittest.TestCase):
                 claim.claim_id, "worker-a", "session-a", claim.fencing_token,
                 now="2026-07-16T00:00:10+00:00", lease_seconds=10,
             )
+
+
+class SQLiteClaimNextTaskTests(ClaimNextTaskContract, unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "claim-next.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
 
 
 class SchedulerOutcomeTests(unittest.TestCase):
