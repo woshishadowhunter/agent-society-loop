@@ -118,12 +118,14 @@ class BenchmarkEvaluator:
     ) -> EvaluationOutcome:
         duration_ms = 0.0
         error = ""
+        evidence: dict[str, Any] = {}
         phase = "candidate execution"
         try:
             execution = self.runner(candidate, case)
             if not isinstance(execution, CandidateExecution):
                 raise TypeError("runner returned an invalid result")
             duration_ms = float(execution.duration_ms)
+            evidence = dict(execution.evidence)
             phase = "case evaluation"
             evaluation = self.evaluator(case, execution.output)
             if not isinstance(evaluation, CaseEvaluation):
@@ -145,6 +147,7 @@ class BenchmarkEvaluator:
             duration_ms=duration_ms,
             critical=case.critical,
             error=error,
+            evidence=evidence,
         )
 
 

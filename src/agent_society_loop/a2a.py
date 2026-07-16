@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import socket
 import time
 import urllib.error
@@ -16,6 +17,9 @@ from uuid import uuid4
 
 from .domain import (
     AgentProfile,
+    BenchmarkCase,
+    CandidateExecution,
+    CandidateIdentity,
     DelegationRecord,
     DelegationStatus,
     RemoteAgentRegistration,
@@ -769,3 +773,56 @@ class A2ARemoteWorker:
             raise WorkerBlocked(
                 "remote delegation requires operator review", evidence
             ) from None
+
+
+class A2ABenchmarkRunner:
+    def __init__(
+        self,
+        executors: Mapping[str, A2ARemoteExecutor],
+        *,
+        benchmark_id: str | None = None,
+    ) -> None:
+        self.executors = dict(executors)
+        identifier = benchmark_id or uuid4().hex[:16]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", identifier):
+            raise ValueError("benchmark ID must be a safe short identifier")
+        self.benchmark_id = identifier
+
+    def __call__(
+        self, candidate: CandidateIdentity, case: BenchmarkCase
+    ) -> CandidateExecution:
+        executor = self.executors.get(candidate.agent_id)
+        if executor is None:
+            raise LookupError(f"no A2A executor for candidate {candidate.agent_id}")
+        if candidate.model_id != executor.registration.model_id:
+            raise ValueError("benchmark candidate identity does not match pinned card")
+        prompt = case.input.get("prompt")
+        description = (
+            prompt.strip()
+            if isinstance(prompt, str) and prompt.strip()
+            else json.dumps(
+                case.input,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        task = Task.create(
+            f"benchmark-{self.benchmark_id}",
+            f"{case.case_id}:{candidate.agent_id}",
+            case.task_type,
+            description,
+            acceptance_criteria=case.acceptance_criteria,
+            context=case.context,
+            max_attempts=1,
+        )
+        execution = executor.delegate(task, dict(case.context), attempt_no=1)
+        return CandidateExecution(
+            output=execution.content,
+            duration_ms=execution.duration_ms,
+            evidence={
+                "delegation_id": execution.delegation_id,
+                "card_sha256": execution.card_sha256,
+                "remote_task_id": execution.remote_task_id,
+            },
+        )
