@@ -2,6 +2,17 @@
 
 All notable changes are documented here.
 
+## 0.3.0 - 2026-07-16
+
+- Added content-addressed, atomic UTF-8 workspace writes with stale-read protection.
+- Added durable per-goal recovery snapshots and conflict-aware restoration.
+- Added operator-configured named verification checks with no model-supplied shell text.
+- Added durable verification results tied to deterministic workspace digests.
+- Added a deterministic reviewer gate that rejects missing or stale check evidence.
+- Added goal-scoped diff inspection and protected path, symlink, size, timeout, and output boundaries.
+- Added opt-in guarded `maintain --apply` mode while preserving read-only defaults.
+- Added cross-approval integration coverage for write, check, resume, diff, and review.
+
 ## 0.2.0 - 2026-07-16
 
 - Added strict JSON model-backed planner, worker, and reviewer adapters.

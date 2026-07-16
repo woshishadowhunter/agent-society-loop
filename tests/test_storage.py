@@ -18,12 +18,60 @@ from agent_society_loop.domain import (
     Task,
     SpanStatus,
     TraceSpan,
+    VerificationResult,
     Verdict,
+    WorkspaceSnapshot,
 )
 from agent_society_loop.storage import SQLiteRepository
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
+    def test_workspace_snapshot_and_verification_survive_database_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "society.db"
+            repository = SQLiteRepository(path)
+            snapshot = WorkspaceSnapshot.create(
+                "goal", "src/app.py", True, "before\n", "before-hash", "after-hash"
+            )
+            result = VerificationResult.create(
+                "goal",
+                "task",
+                "tests",
+                ("python", "-m", "unittest"),
+                True,
+                0,
+                12.5,
+                "ok",
+                "",
+                "workspace-hash",
+            )
+            repository.save_workspace_snapshot(snapshot)
+            repository.save_verification_result(result)
+            repository.close()
+
+            reopened = SQLiteRepository(path)
+            self.assertEqual(
+                reopened.get_workspace_snapshot("goal", "src/app.py"), snapshot
+            )
+            self.assertEqual(reopened.list_workspace_snapshots("goal"), [snapshot])
+            self.assertEqual(reopened.list_verification_results("goal"), [result])
+            reopened.close()
+
+    def test_snapshot_update_cannot_replace_original_recovery_point(self):
+        repository = SQLiteRepository(":memory:")
+        original = WorkspaceSnapshot.create(
+            "goal", "a.py", True, "original", "hash-a", "hash-b"
+        )
+        repository.save_workspace_snapshot(original)
+
+        with self.assertRaisesRegex(ValueError, "original"):
+            repository.save_workspace_snapshot(
+                WorkspaceSnapshot.create(
+                    "goal", "a.py", True, "different", "hash-x", "hash-c"
+                )
+            )
+
+        repository.close()
     def test_approval_resolution_rolls_back_with_goal_and_events(self):
         repository = SQLiteRepository(":memory:")
         goal = replace(

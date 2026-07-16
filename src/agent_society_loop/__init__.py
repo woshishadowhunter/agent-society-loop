@@ -11,7 +11,9 @@ from .domain import (
     TaskStatus,
     ToolRisk,
     TraceSpan,
+    VerificationResult,
     Verdict,
+    WorkspaceSnapshot,
 )
 
 __all__ = [
@@ -25,7 +27,9 @@ __all__ = [
     "TaskStatus",
     "ToolRisk",
     "TraceSpan",
+    "VerificationResult",
     "Verdict",
+    "WorkspaceSnapshot",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

@@ -20,7 +20,7 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `tools.py` | Tool discovery, schema validation, policy, and approval enforcement |
 | `tracing.py` | Linked, timed, redacted execution spans |
 | `github.py` | Bounded read-only GitHub issue retrieval |
-| `workspace_tools.py` | Bounded read-only local repository inspection |
+| `workspace_tools.py` | Bounded inspection, content-addressed writes, recovery, and named checks |
 | `maintenance.py` | GitHub issue maintenance composition root |
 | `cli.py` | Goal execution and operational inspection |
 
@@ -93,10 +93,16 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Review PASS alone is insufficient when its score is below `min_passing_score`.
 - Long-term knowledge and review feedback cannot modify budgets or criteria.
 - Provider secrets are kept outside persistence and error messages.
-- No component autonomously modifies repository source code.
+- Repository source changes require an exact durable approval; no component can self-approve.
 - Read-only tools run immediately; write and execute tools require a durable approval.
 - Pending approval pauses the goal without creating a failed attempt or consuming action budget.
 - Model and tool spans redact sensitive attributes before persistence.
+- Workspace writes require an exact pre-write SHA-256 identity and use atomic replacement.
+- Per-goal original content and the latest mutation identities are durable and recoverable.
+- Verification commands are operator configured, selected by name, shell-free, timed, and output bounded.
+- Verification results are tied to a deterministic digest of goal-owned workspace changes.
+- Guarded review rejects model PASS when a required check is missing, failed, or stale.
+- No local tool commits, pushes, or creates a pull request.
 
 ## Extension example
 

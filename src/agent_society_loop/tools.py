@@ -102,11 +102,15 @@ class ToolExecutor:
         tool = self.registry.get(name)
         _validate_arguments(tool.input_schema, arguments)
         if self.policy.requires_approval(tool, context):
+            approval_arguments = dict(arguments)
+            enrich = getattr(tool, "approval_arguments", None)
+            if callable(enrich):
+                approval_arguments = enrich(dict(arguments))
             requested = ApprovalRequest.create(
                 context.goal_id,
                 context.task_id,
                 tool.name,
-                arguments,
+                approval_arguments,
                 f"{tool.risk.value} tool requires approval",
             )
             approval = (
@@ -134,7 +138,11 @@ class ToolExecutor:
         )
         try:
             with trace:
-                output = tool.invoke(dict(arguments))
+                contextual = getattr(tool, "invoke_with_context", None)
+                if callable(contextual):
+                    output = contextual(dict(arguments), context)
+                else:
+                    output = tool.invoke(dict(arguments))
         except Exception as error:
             return ToolResult(False, error=f"{type(error).__name__}: tool execution failed")
         return ToolResult(True, output=output)
@@ -155,9 +163,13 @@ def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> No
         if unexpected:
             raise ToolDenied(f"unexpected tool argument: {unexpected[0]}")
     for name, value in arguments.items():
-        expected = properties.get(name, {}).get("type")
+        definition = properties.get(name, {})
+        expected = definition.get("type")
         if expected and not _matches_json_type(value, expected):
             raise ToolDenied(f"tool argument {name} must be {expected}")
+        allowed = definition.get("enum")
+        if allowed is not None and value not in allowed:
+            raise ToolDenied(f"tool argument {name} must be one of the allowed values")
 
 
 def _matches_json_type(value: Any, expected: str) -> bool:

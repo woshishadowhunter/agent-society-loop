@@ -146,6 +146,18 @@ class ToolRuntimeTests(unittest.TestCase):
                 "echo", {"text": "hello", "extra": True}, self.context
             )
 
+    def test_schema_enum_rejects_values_outside_registered_options(self):
+        tool = EchoTool()
+        tool.input_schema = {
+            "type": "object",
+            "properties": {"text": {"type": "string", "enum": ["allowed"]}},
+            "required": ["text"],
+            "additionalProperties": False,
+        }
+
+        with self.assertRaisesRegex(ToolDenied, "allowed values"):
+            self.executor(tool).execute("echo", {"text": "other"}, self.context)
+
     def test_duplicate_registration_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "duplicate tool"):
             ToolRegistry([EchoTool(), EchoTool()])
