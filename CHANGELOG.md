@@ -2,6 +2,16 @@
 
 All notable changes are documented here.
 
+## 0.7.0 - 2026-07-16
+
+- Added strict, content-addressed delegation policy with exact agent/card/task domains, context allowlists, resource ceilings, and required evidence freshness.
+- Added immutable policy activation, official A2A TCK attestation, and per-attempt ALLOW/DENY decision records in SQLite.
+- Added fail-closed production enforcement before payload construction or network I/O; policy limits constrain requests, results, polling, and deadlines.
+- Added bounded import of official `a2aproject/a2a-tck` compatibility JSON with source revision, tool version, transport, MUST-level, interface, tenant, and skill validation.
+- Added a read-only eight-check A2A readiness doctor and a socket-free five-scenario reliability campaign.
+- Added policy, attestation, decision, doctor, and self-test CLI workflows; production remote runs now require deployment, policy, fresh evidence, and explicit opt-in.
+- Preserved no-resend recovery: existing accepted or completed v0.6 delegations resume without being reauthorized or resent.
+
 ## 0.6.0 - 2026-07-16
 
 - Added strict outbound A2A `1.0` `HTTP+JSON` Agent Card inspection, digest pinning, and immutable remote registrations.

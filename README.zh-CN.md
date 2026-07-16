@@ -141,7 +141,7 @@ agent-society deployments --db evolution.db --json
 
 ## 委派给受治理的 A2A 专家
 
-v0.6 支持 A2A `1.0` 的 `HTTP+JSON` 轮询子集。系统不会因为发现一个远端 Agent 就自动信任它：操作者必须检查 Agent Card，固定原始 SHA-256、精确接口和技能映射，再对这个不可变身份执行 benchmark 并显式晋级。
+v0.7 为 A2A `1.0` `HTTP+JSON` 轮询子集增加了信任控制面。发现和注册都不代表授权；每个新的生产委派必须同时通过四道独立门禁：精确身份已晋级部署、内容寻址策略已激活、官方 A2A TCK 证明通过且未过期、运行时显式提供 `run --allow-remote`。
 
 ```bash
 agent-society a2a inspect-card https://agent.example/.well-known/agent-card.json --json
@@ -152,12 +152,27 @@ agent-society a2a register research-agent \
   --skill research=deep-research --auth-env ACME_A2A_TOKEN --json
 
 # 先评测并晋级精确的 a2a:CARD_SHA256 身份。
+# 将 examples/a2a-policy.json 中的摘要替换为 CARD_SHA256。
+agent-society a2a policy validate examples/a2a-policy.json --json
+agent-society a2a policy import examples/a2a-policy.json --db society.db --json
+agent-society a2a policy activate research POLICY_DIGEST \
+  --by operator --db society.db --json
+
+# 在运行时之外执行固定版本的官方 TCK，再导入报告。
+agent-society a2a attestation import research-agent compatibility.json \
+  --source-revision 5996b79f9cefa6fc390980e383e358a66fb9e49e \
+  --tool-version 1.0.0 --db society.db --json
+agent-society a2a doctor research-agent research --db society.db --json
+agent-society a2a self-test --json
 agent-society run examples/a2a-goal-spec.json --db society.db --allow-remote --json
+agent-society a2a decisions remote-research-001 --db society.db --json
 agent-society a2a delegations --db society.db --json
 agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 ```
 
-仅注册不会获得生产流量；没有精确 active deployment 时，A2A 档案不参与选人；已有远端部署但未提供 `--allow-remote` 时，目标会阻塞而不是回退。Bearer 值只从已登记的环境变量名读取。明文 HTTP 仅允许显式开启的本机回环开发地址。完整的评测、晋级、超时、模糊提交和取消流程见 [A2A 安全委派](docs/a2a.md)。
+策略决策会在构造请求和联网之前持久化。策略只能收紧上下文、请求/结果字节、轮询次数和总时限；ALLOW 与 DENY 都可审计。已经接受或完成的旧委派按原决策恢复，策略切换不会导致重发。
+
+运行时只导入 TCK 报告，不会下载或执行 TCK。源码修订号和工具版本是操作者提供的来源信息，不是签名或信任根；Bearer 值仍不会进入 SQLite。外部 TCK 流程、策略结构、doctor 检查、恢复规则和威胁边界见 [A2A 安全委派](docs/a2a.md)。
 
 ## 常用命令
 
@@ -175,6 +190,11 @@ agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 | `agent-society a2a inspect-card URL` | 检查 Agent Card 并计算摘要 |
 | `agent-society a2a register ...` | 固定卡片、接口和技能映射 |
 | `agent-society a2a agents` | 查看远端信任记录 |
+| `agent-society a2a policy ...` | 校验、导入、激活、列出或模拟委派策略 |
+| `agent-society a2a attestation ...` | 导入或查看官方 TCK 证明 |
+| `agent-society a2a doctor AGENT TASK_TYPE` | 不发送任务地检查八项生产就绪条件 |
+| `agent-society a2a self-test` | 运行五个本地 A2A 故障安全场景 |
+| `agent-society a2a decisions [GOAL_ID]` | 查看持久 ALLOW/DENY 证据 |
 | `agent-society a2a delegations [ID]` | 查看持久委派状态 |
 | `agent-society a2a cancel ID --by NAME` | 取消已知远端任务 |
 | `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
@@ -215,7 +235,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.6 的调度器仍在单进程中顺序执行；长期知识采用标签和词项匹配，不是向量数据库。MCP 仍仅支持稳定版 stdio 工具发现与调用。A2A 仅支持出站 `HTTP+JSON` 轮询，不包含入站服务、流式、Webhook、多轮输入或认证补充、文件/媒体、自动发现、JWS 验签、凭据获取、自动重发、自动回退或自动晋级。系统不能删除或重命名文件、安装依赖、合并、强制推送或修改分支保护。并发调度、在线学习和 Web 控制台仍属于后续工作。
+v0.7 的调度器仍在单进程中顺序执行，SQLite 仍是单机仓库；项目不宣称已经具备分布式调度或租约安全。MCP 仍仅支持稳定版 stdio 调用。A2A 仅支持出站 `HTTP+JSON` 轮询，不包含入站服务、流式、Webhook、多轮输入/认证补充、文件/媒体、自动发现、JWS 验签、凭据获取、自动重发、回退、自动晋级、自动执行 TCK 或密码学证明验证。并发调度必须先引入带事务租约和 fencing 的仓库协议；在线学习和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

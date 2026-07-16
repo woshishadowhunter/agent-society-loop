@@ -20,6 +20,8 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `tools.py` | Tool discovery, schema validation, policy, and approval enforcement |
 | `mcp.py` | Bounded MCP stdio transport, tool discovery, and local risk adaptation |
 | `a2a.py` | Pinned Agent Cards, bounded A2A HTTP, durable delegation, and remote workers |
+| `a2a_governance.py` | Strict policy/TCK parsing, durable decision evaluation, and readiness doctor |
+| `a2a_reliability.py` | Socket-free deterministic A2A fault campaign |
 | `evaluation.py` | Immutable benchmark evaluation and champion/challenger gates |
 | `tracing.py` | Linked, timed, redacted execution spans |
 | `github.py` | Bounded read-only GitHub issue retrieval |
@@ -95,6 +97,7 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Audit memory: ordered events for goals, planning, selection, attempts, reviews, retries, recovery, and completion.
 - Evaluation memory: benchmark digests, per-case outcomes, gate metrics, promotion identity, and active deployments.
 - Delegation memory: pinned card identity, durable message and remote task IDs, poll state, normalized result digest, and sanitized terminal category.
+- Governance memory: canonical policy digests, task-type activations, imported conformance attestations, and immutable per-attempt ALLOW/DENY decisions.
 
 SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. This keeps the database inspectable while preserving typed Python contracts.
 
@@ -122,8 +125,11 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Evaluation recommendations never change routing without explicit, identity-checked promotion.
 - Deployed task types block when their champion is unavailable rather than falling back.
 - A2A requests require exact pinned card, interface, protocol version, skill, and optional tenant identities.
+- New production A2A requests require exact deployment, active default-deny policy, fresh passing required attestations, and explicit runtime opt-in.
+- Policy decisions are durable before payload construction or network I/O; policy limits can only tighten runtime ceilings.
 - A2A sends persist `submitting` first; timeout, connection loss, 5xx, or malformed success becomes terminal `unknown` and is never automatically resent.
 - Remote output accepts bounded text and structured data only; local review still decides PASS or FAIL.
+- Existing accepted/completed delegations resume using stored authority; current policy changes never trigger a resend.
 
 ## Extension example
 

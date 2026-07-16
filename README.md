@@ -93,7 +93,7 @@ External tools can be adapted from stable MCP `2025-11-25` stdio servers. Discov
 
 ## Delegate to governed A2A specialists
 
-Version 0.6 supports the A2A `1.0` `HTTP+JSON` polling subset. A remote specialist is not trusted through discovery: the operator inspects its Agent Card, pins the raw SHA-256 plus exact interface and skill mapping, evaluates that immutable identity, and explicitly promotes it before production routing can use it.
+Version 0.7 adds a trust control plane to the A2A `1.0` `HTTP+JSON` polling subset. Discovery and registration are not authority. Every new production delegation requires four independent gates: an exact promoted deployment, an active content-addressed policy, fresh passing official A2A TCK evidence, and explicit `run --allow-remote` opt-in.
 
 ```bash
 agent-society a2a inspect-card https://agent.example/.well-known/agent-card.json --json
@@ -104,12 +104,27 @@ agent-society a2a register research-agent \
   --skill research=deep-research --auth-env ACME_A2A_TOKEN --json
 
 # Evaluate and promote the exact a2a:CARD_SHA256 identity first.
+# Replace the digest in examples/a2a-policy.json with CARD_SHA256.
+agent-society a2a policy validate examples/a2a-policy.json --json
+agent-society a2a policy import examples/a2a-policy.json --db society.db --json
+agent-society a2a policy activate research POLICY_DIGEST \
+  --by operator --db society.db --json
+
+# Run the pinned official TCK externally, then import its report.
+agent-society a2a attestation import research-agent compatibility.json \
+  --source-revision 5996b79f9cefa6fc390980e383e358a66fb9e49e \
+  --tool-version 1.0.0 --db society.db --json
+agent-society a2a doctor research-agent research --db society.db --json
+agent-society a2a self-test --json
 agent-society run examples/a2a-goal-spec.json --db society.db --allow-remote --json
+agent-society a2a decisions remote-research-001 --db society.db --json
 agent-society a2a delegations --db society.db --json
 agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 ```
 
-Registration alone receives no production traffic. Without an active exact deployment, A2A profiles are excluded; without `--allow-remote`, an active remote deployment blocks instead of falling back. Bearer values are read only from the registered environment-variable name. Plain HTTP requires the explicit development flag and a loopback host. See [Guarded A2A delegation](docs/a2a.md) for benchmark, promotion, timeout, ambiguity, and cancellation procedures.
+Policy decisions are persisted before payload construction and network I/O. Policy ceilings can only reduce runtime context, request/result bytes, polls, and deadlines. Both ALLOW and DENY decisions remain inspectable. Existing accepted or completed delegations resume under their stored authority and are never resent because policy changed.
+
+The runtime imports but never downloads or executes the TCK. The source revision and tool version are operator-supplied provenance, not a signature or trust root. Bearer values remain outside SQLite. See [Guarded A2A delegation](docs/a2a.md) for the external TCK procedure, policy schema, doctor checks, recovery rules, and threat boundary.
 
 ## Architecture
 
@@ -175,6 +190,11 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society a2a inspect-card URL` | Inspect and hash a bounded Agent Card |
 | `agent-society a2a register ...` | Register an exact card, interface, and skill map |
 | `agent-society a2a agents` | Inspect remote trust records |
+| `agent-society a2a policy ...` | Validate, import, activate, list, or simulate delegation policy |
+| `agent-society a2a attestation ...` | Import or list official TCK evidence |
+| `agent-society a2a doctor AGENT TASK_TYPE` | Check eight production-readiness gates without sending work |
+| `agent-society a2a self-test` | Run five local A2A failure-safety scenarios |
+| `agent-society a2a decisions [GOAL_ID]` | Inspect durable ALLOW/DENY evidence |
 | `agent-society a2a delegations [ID]` | Inspect durable remote execution state |
 | `agent-society a2a cancel ID --by NAME` | Cancel a known remote task |
 | `agent-society maintain OWNER/REPO ISSUE` | Produce a reviewed, read-only maintenance proposal |
@@ -220,7 +240,7 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.6 still runs the orchestrator sequentially in one process and uses tagged lexical retrieval rather than embeddings. MCP support remains limited to stable stdio tool discovery and calls. A2A support is outbound `HTTP+JSON` polling only: no inbound server, streaming, webhooks, multi-turn input/auth exchange, file or media parts, automatic discovery, JWS verification, credential acquisition, automatic resend, fallback, or promotion. The runtime cannot delete or rename files, install dependencies, merge, force-push, or modify branch protection. Concurrent scheduling, online learning, and a web console remain future work.
+Version 0.7 still runs the orchestrator sequentially in one process and uses SQLite as a single-host repository; it does not claim distributed scheduling or lease safety. MCP support remains limited to stable stdio calls. A2A remains outbound `HTTP+JSON` polling only: no inbound server, streaming, webhooks, multi-turn input/auth exchange, file/media parts, automatic discovery, JWS verification, credential acquisition, automatic resend, fallback, promotion, TCK execution, or cryptographic attestation verification. Concurrent scheduling first requires a transactional repository protocol with leases and fencing; online learning and a web console remain future work.
 
 ## Development
 
