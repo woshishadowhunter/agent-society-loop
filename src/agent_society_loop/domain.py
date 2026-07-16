@@ -1,0 +1,221 @@
+"""Typed domain contracts for the Agent Society runtime."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Iterable, Sequence
+from uuid import uuid4
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+class GoalStatus(str, Enum):
+    CREATED = "created"
+    PLANNING = "planning"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+
+
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+
+
+class Verdict(str, Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+
+
+@dataclass(frozen=True, slots=True)
+class Goal:
+    goal_id: str
+    title: str
+    description: str
+    status: GoalStatus = GoalStatus.CREATED
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+    failure_reason: str = ""
+
+    @classmethod
+    def create(cls, title: str, description: str, goal_id: str | None = None) -> Goal:
+        if not title.strip():
+            raise ValueError("goal title must not be empty")
+        if not description.strip():
+            raise ValueError("goal description must not be empty")
+        return cls(goal_id or f"goal-{uuid4().hex[:12]}", title.strip(), description.strip())
+
+
+@dataclass(frozen=True, slots=True)
+class Task:
+    task_id: str
+    goal_id: str
+    task_type: str
+    description: str
+    assigned_role: str = "worker"
+    acceptance_criteria: dict[str, Any] = field(default_factory=dict)
+    dependencies: tuple[str, ...] = ()
+    context: dict[str, Any] = field(default_factory=dict)
+    status: TaskStatus = TaskStatus.PENDING
+    max_attempts: int = 3
+    position: int = 0
+    assigned_agent_id: str | None = None
+    artifact_id: str | None = None
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        task_type: str,
+        description: str,
+        *,
+        assigned_role: str = "worker",
+        acceptance_criteria: dict[str, Any] | None = None,
+        dependencies: Sequence[str] = (),
+        context: dict[str, Any] | None = None,
+        max_attempts: int = 3,
+        position: int = 0,
+    ) -> Task:
+        if max_attempts < 1:
+            raise ValueError("max_attempts must be positive")
+        for name, value in (
+            ("goal_id", goal_id),
+            ("task_id", task_id),
+            ("task_type", task_type),
+            ("description", description),
+            ("assigned_role", assigned_role),
+        ):
+            if not value.strip():
+                raise ValueError(f"{name} must not be empty")
+        return cls(
+            task_id=task_id,
+            goal_id=goal_id,
+            task_type=task_type,
+            description=description.strip(),
+            assigned_role=assigned_role,
+            acceptance_criteria=dict(acceptance_criteria or {}),
+            dependencies=tuple(dependencies),
+            context=dict(context or {}),
+            max_attempts=max_attempts,
+            position=position,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Defect:
+    location: str
+    issue: str
+    suggestion: str
+
+
+@dataclass(frozen=True, slots=True)
+class Review:
+    review_id: str
+    goal_id: str
+    task_id: str
+    attempt_no: int
+    verdict: Verdict
+    score: float
+    defects: tuple[Defect, ...]
+    summary: str
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        attempt_no: int,
+        verdict: Verdict,
+        score: float,
+        defects: Iterable[Defect],
+        summary: str,
+    ) -> Review:
+        if not 0 <= score <= 100:
+            raise ValueError("review score must be between 0 and 100")
+        if attempt_no < 1:
+            raise ValueError("attempt_no must be positive")
+        return cls(
+            review_id=f"review-{uuid4().hex[:12]}",
+            goal_id=goal_id,
+            task_id=task_id,
+            attempt_no=attempt_no,
+            verdict=verdict,
+            score=float(score),
+            defects=tuple(defects),
+            summary=summary,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RunBudget:
+    max_actions: int = 100
+    min_passing_score: float = 70.0
+
+    def __post_init__(self) -> None:
+        if self.max_actions < 1:
+            raise ValueError("max_actions must be positive")
+        if not 0 <= self.min_passing_score <= 100:
+            raise ValueError("min_passing_score must be between 0 and 100")
+
+
+_GOAL_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {
+    GoalStatus.CREATED: frozenset({GoalStatus.PLANNING}),
+    GoalStatus.PLANNING: frozenset({GoalStatus.RUNNING, GoalStatus.FAILED}),
+    GoalStatus.RUNNING: frozenset(
+        {GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}
+    ),
+    GoalStatus.SUCCEEDED: frozenset(),
+    GoalStatus.FAILED: frozenset(),
+    GoalStatus.BLOCKED: frozenset(),
+}
+
+
+def transition_goal(goal: Goal, target: GoalStatus, reason: str = "") -> Goal:
+    if goal.status in {GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}:
+        raise ValueError(f"goal is terminal in state {goal.status.value}")
+    if target not in _GOAL_TRANSITIONS[goal.status]:
+        raise ValueError(f"invalid goal transition: {goal.status.value} -> {target.value}")
+    return replace(goal, status=target, updated_at=utc_now(), failure_reason=reason)
+
+
+def validate_task_graph(tasks: Sequence[Task]) -> Sequence[Task]:
+    identifiers = [task.task_id for task in tasks]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("task graph contains duplicate task IDs")
+
+    known = set(identifiers)
+    for task in tasks:
+        for dependency in task.dependencies:
+            if dependency not in known:
+                raise ValueError(
+                    f"task {task.task_id} has missing dependency {dependency}"
+                )
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    dependencies = {task.task_id: task.dependencies for task in tasks}
+
+    def visit(task_id: str) -> None:
+        if task_id in visiting:
+            raise ValueError("task graph contains a dependency cycle")
+        if task_id in visited:
+            return
+        visiting.add(task_id)
+        for dependency in dependencies[task_id]:
+            visit(dependency)
+        visiting.remove(task_id)
+        visited.add(task_id)
+
+    for identifier in identifiers:
+        visit(identifier)
+    return tasks
