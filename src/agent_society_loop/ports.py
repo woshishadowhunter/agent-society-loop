@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol, Sequence, runtime_checkable
 
-from .domain import Goal, Review, Task
+from .domain import Artifact, Attempt, Event, Goal, PerformanceRecord, Review, Task
+from .scheduler import TaskClaim, WorkerSession
 
 
 class WorkerBlocked(RuntimeError):
@@ -55,3 +56,76 @@ class ModelProvider(Protocol):
     def complete(
         self, messages: Sequence[dict[str, str]], *, temperature: float = 0.0
     ) -> str: ...
+
+
+@runtime_checkable
+class SchedulerRepository(Protocol):
+    """Persistence boundary required by lease-based scheduler workers."""
+
+    def register_worker(self, session: WorkerSession) -> WorkerSession: ...
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        session_id: str,
+        *,
+        now: str,
+        ttl_seconds: int,
+    ) -> WorkerSession: ...
+
+    def get_worker(self, worker_id: str) -> WorkerSession | None: ...
+
+    def list_workers(self) -> list[WorkerSession]: ...
+
+    def claim_task(
+        self,
+        goal_id: str,
+        task_id: str,
+        worker_id: str,
+        session_id: str,
+        agent_id: str,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> TaskClaim | None: ...
+
+    def renew_claim(
+        self,
+        claim_id: str,
+        worker_id: str,
+        session_id: str,
+        fencing_token: int,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> TaskClaim: ...
+
+    def release_claim(
+        self,
+        claim_id: str,
+        worker_id: str,
+        session_id: str,
+        fencing_token: int,
+        *,
+        now: str,
+        reason: str = "",
+    ) -> TaskClaim: ...
+
+    def reap_expired_claims(self, *, now: str) -> list[TaskClaim]: ...
+
+    def commit_claim_outcome(
+        self,
+        claim: TaskClaim,
+        task: Task,
+        artifact: Artifact | None,
+        attempt: Attempt,
+        review: Review,
+        performance: PerformanceRecord,
+        events: Sequence[Event],
+        *,
+        now: str,
+    ) -> TaskClaim: ...
+
+    def get_claim(self, claim_id: str) -> TaskClaim | None: ...
+
+    def list_claims(self, goal_id: str | None = None) -> list[TaskClaim]: ...

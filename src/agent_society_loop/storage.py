@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 from .domain import (
     AgentProfile,
@@ -45,6 +46,7 @@ from .domain import (
     Verdict,
     WorkspaceSnapshot,
 )
+from .scheduler import WorkerSession, WorkerSessionRejected
 
 
 def _json_default(value: Any) -> Any:
@@ -66,9 +68,12 @@ class SQLiteRepository:
 
     def __init__(self, path: str | Path):
         self.path = str(path)
-        self.connection = sqlite3.connect(self.path)
+        self.connection = sqlite3.connect(self.path, timeout=5.0)
         self.connection.row_factory = sqlite3.Row
         self.connection.execute("PRAGMA foreign_keys = ON")
+        self.connection.execute("PRAGMA busy_timeout = 5000")
+        if self.path != ":memory:":
+            self.connection.execute("PRAGMA journal_mode = WAL")
         self._create_schema()
 
     def _create_schema(self) -> None:
@@ -236,12 +241,91 @@ class SQLiteRepository:
             );
             CREATE INDEX IF NOT EXISTS policy_decisions_goal_idx
                 ON policy_decisions(goal_id, task_id, attempt_no);
+            CREATE TABLE IF NOT EXISTS scheduler_workers (
+                worker_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
             """
         )
         self.connection.commit()
 
+    @contextmanager
+    def _immediate_transaction(self) -> Iterator[None]:
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
+
     def close(self) -> None:
         self.connection.close()
+
+    def register_worker(self, session: WorkerSession) -> WorkerSession:
+        with self._immediate_transaction():
+            self.connection.execute(
+                "INSERT INTO scheduler_workers(worker_id, session_id, expires_at, payload) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(worker_id) DO UPDATE SET "
+                "session_id=excluded.session_id, expires_at=excluded.expires_at, "
+                "payload=excluded.payload",
+                (
+                    session.worker_id,
+                    session.session_id,
+                    session.expires_at,
+                    _dump(asdict(session)),
+                ),
+            )
+        return session
+
+    def heartbeat_worker(
+        self,
+        worker_id: str,
+        session_id: str,
+        *,
+        now: str,
+        ttl_seconds: int,
+    ) -> WorkerSession:
+        with self._immediate_transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM scheduler_workers WHERE worker_id=?", (worker_id,)
+            ).fetchone()
+            if row is None:
+                raise WorkerSessionRejected("worker session is not registered")
+            current = self._worker_from_payload(row["payload"])
+            if current.session_id != session_id:
+                raise WorkerSessionRejected("worker session has been superseded")
+            updated = current.heartbeat(now=now, ttl_seconds=ttl_seconds)
+            cursor = self.connection.execute(
+                "UPDATE scheduler_workers SET expires_at=?, payload=? "
+                "WHERE worker_id=? AND session_id=?",
+                (updated.expires_at, _dump(asdict(updated)), worker_id, session_id),
+            )
+            if cursor.rowcount != 1:
+                raise WorkerSessionRejected("worker session has been superseded")
+        return updated
+
+    @staticmethod
+    def _worker_from_payload(payload: str) -> WorkerSession:
+        data = _load(payload)
+        data["capabilities"] = tuple(data["capabilities"])
+        return WorkerSession(**data)
+
+    def get_worker(self, worker_id: str) -> WorkerSession | None:
+        row = self.connection.execute(
+            "SELECT payload FROM scheduler_workers WHERE worker_id=?", (worker_id,)
+        ).fetchone()
+        return None if row is None else self._worker_from_payload(row["payload"])
+
+    def list_workers(self) -> list[WorkerSession]:
+        rows = self.connection.execute(
+            "SELECT payload FROM scheduler_workers ORDER BY worker_id"
+        ).fetchall()
+        return [self._worker_from_payload(row["payload"]) for row in rows]
 
     def save_goal(self, goal: Goal) -> None:
         self.connection.execute(

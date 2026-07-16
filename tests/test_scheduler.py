@@ -1,12 +1,16 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from agent_society_loop.scheduler import (
     ClaimStatus,
     TaskClaim,
     WorkerSession,
+    WorkerSessionRejected,
     parse_utc,
     validate_duration,
 )
+from agent_society_loop.storage import SQLiteRepository
 
 
 AT = "2026-07-16T00:00:00+00:00"
@@ -55,6 +59,58 @@ class SchedulerDomainTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fencing_token"):
             TaskClaim.create(
                 "g", "t", session, "agent-a", 0, now=AT, lease_seconds=10
+            )
+
+
+class SchedulerStorageTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "scheduler.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
+
+    def test_new_worker_session_supersedes_old_and_survives_reopen(self):
+        first_session = WorkerSession.create(
+            "worker-a", "session-1", ("analysis",), now=AT, ttl_seconds=30
+        )
+        second_session = WorkerSession.create(
+            "worker-a", "session-2", ("analysis",), now=PLUS_5, ttl_seconds=30
+        )
+
+        self.first.register_worker(first_session)
+        self.second.register_worker(second_session)
+
+        with self.assertRaisesRegex(WorkerSessionRejected, "superseded"):
+            self.first.heartbeat_worker(
+                "worker-a", "session-1", now="2026-07-16T00:00:06+00:00", ttl_seconds=30
+            )
+        self.assertEqual(self.first.get_worker("worker-a"), second_session)
+        self.assertEqual(self.first.list_workers(), [second_session])
+
+        self.second.close()
+        self.second = SQLiteRepository(self.path)
+        self.assertEqual(self.second.get_worker("worker-a"), second_session)
+
+    def test_heartbeat_extends_exact_live_session_but_not_expired_session(self):
+        session = WorkerSession.create(
+            "worker-a", "session-a", (), now=AT, ttl_seconds=10
+        )
+        self.first.register_worker(session)
+
+        heartbeat = self.second.heartbeat_worker(
+            "worker-a", "session-a", now=PLUS_5, ttl_seconds=10
+        )
+
+        self.assertEqual(heartbeat.last_heartbeat_at, PLUS_5)
+        self.assertEqual(heartbeat.expires_at, PLUS_15)
+        with self.assertRaisesRegex(WorkerSessionRejected, "expired"):
+            self.first.heartbeat_worker(
+                "worker-a", "session-a", now=PLUS_15, ttl_seconds=10
             )
 
 
