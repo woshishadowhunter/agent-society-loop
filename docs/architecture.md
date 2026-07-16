@@ -16,6 +16,12 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `engine.py` | Goal lifecycle, outer loop, inner loop, budgets, resume |
 | `deterministic.py` | Reproducible planner, specialists, and criteria reviewer |
 | `providers.py` | OpenAI-compatible HTTP boundary |
+| `model_agents.py` | Strict JSON planner, worker, and reviewer adapters |
+| `tools.py` | Tool discovery, schema validation, policy, and approval enforcement |
+| `tracing.py` | Linked, timed, redacted execution spans |
+| `github.py` | Bounded read-only GitHub issue retrieval |
+| `workspace_tools.py` | Bounded read-only local repository inspection |
+| `maintenance.py` | GitHub issue maintenance composition root |
 | `cli.py` | Goal execution and operational inspection |
 
 Dependencies point toward domain contracts. The engine knows protocols and persistence services, not provider SDKs.
@@ -31,6 +37,9 @@ stateDiagram-v2
     running --> succeeded: every task passed
     running --> failed: task attempts exhausted
     running --> blocked: budget or progress unavailable
+    running --> paused: tool approval required
+    paused --> running: approval granted and resumed
+    paused --> failed: approval rejected
 ```
 
 Terminal goals are immutable. An interrupted process normally leaves the goal `running`; `resume` resets any in-flight task to `pending`, emits `task.recovered`, and skips succeeded tasks.
@@ -85,6 +94,9 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Long-term knowledge and review feedback cannot modify budgets or criteria.
 - Provider secrets are kept outside persistence and error messages.
 - No component autonomously modifies repository source code.
+- Read-only tools run immediately; write and execute tools require a durable approval.
+- Pending approval pauses the goal without creating a failed attempt or consuming action budget.
+- Model and tool spans redact sensitive attributes before persistence.
 
 ## Extension example
 

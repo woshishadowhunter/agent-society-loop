@@ -108,33 +108,12 @@ class LoopEngine:
         approved: bool,
         decided_by: str,
     ) -> ApprovalRequest:
-        approval = self.repository.get_approval(approval_id)
-        if approval is None:
-            raise KeyError(f"approval not found: {approval_id}")
-        goal = self.repository.get_goal(approval.goal_id)
-        if goal is None:
-            raise KeyError(f"goal not found: {approval.goal_id}")
-        if goal.status != GoalStatus.PAUSED:
-            raise ValueError(f"goal is not paused: {goal.goal_id}")
-        status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
-        resolved = approval.resolve(status, decided_by)
-        self.repository.save_approval(resolved)
-        self._event(
-            goal.goal_id,
-            f"approval.{status.value}",
-            {
-                "approval_id": resolved.approval_id,
-                "task_id": resolved.task_id,
-                "tool_name": resolved.tool_name,
-                "decided_by": resolved.decided_by,
-            },
+        return resolve_approval(
+            self.repository,
+            approval_id,
+            approved=approved,
+            decided_by=decided_by,
         )
-        if status == ApprovalStatus.REJECTED:
-            reason = f"approval rejected for tool {resolved.tool_name}"
-            failed = transition_goal(goal, GoalStatus.FAILED, reason)
-            self.repository.save_goal(failed)
-            self._event(failed.goal_id, "goal.failed", {"reason": reason})
-        return resolved
 
     def _plan(self, goal: Goal) -> Goal:
         if goal.status == GoalStatus.CREATED:
@@ -373,3 +352,43 @@ class LoopEngine:
 
     def _event(self, goal_id: str, event_type: str, payload: dict[str, object]) -> None:
         self.repository.append_event(Event.create(goal_id, event_type, payload))
+
+
+def resolve_approval(
+    repository: SQLiteRepository,
+    approval_id: str,
+    *,
+    approved: bool,
+    decided_by: str,
+) -> ApprovalRequest:
+    approval = repository.get_approval(approval_id)
+    if approval is None:
+        raise KeyError(f"approval not found: {approval_id}")
+    goal = repository.get_goal(approval.goal_id)
+    if goal is None:
+        raise KeyError(f"goal not found: {approval.goal_id}")
+    if goal.status != GoalStatus.PAUSED:
+        raise ValueError(f"goal is not paused: {goal.goal_id}")
+    status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+    resolved = approval.resolve(status, decided_by)
+    repository.save_approval(resolved)
+    repository.append_event(
+        Event.create(
+            goal.goal_id,
+            f"approval.{status.value}",
+            {
+                "approval_id": resolved.approval_id,
+                "task_id": resolved.task_id,
+                "tool_name": resolved.tool_name,
+                "decided_by": resolved.decided_by,
+            },
+        )
+    )
+    if status == ApprovalStatus.REJECTED:
+        reason = f"approval rejected for tool {resolved.tool_name}"
+        failed = transition_goal(goal, GoalStatus.FAILED, reason)
+        repository.save_goal(failed)
+        repository.append_event(
+            Event.create(failed.goal_id, "goal.failed", {"reason": reason})
+        )
+    return resolved

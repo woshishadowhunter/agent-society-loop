@@ -3,9 +3,45 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_society_loop.cli import main
+from agent_society_loop.domain import (
+    ApprovalRequest,
+    ApprovalStatus,
+    Goal,
+    GoalStatus,
+)
+from agent_society_loop.github import GitHubIssue
+from agent_society_loop.storage import SQLiteRepository
+
+
+class ScriptedProvider:
+    model = "scripted-model"
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+
+    def complete(self, messages, *, temperature=0.0):
+        return self.responses.pop(0)
+
+
+class FakeIssueClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def get_issue(self, repository, number):
+        return GitHubIssue(
+            repository,
+            number,
+            "Fix parser",
+            "Handle empty input",
+            ("bug",),
+            f"https://github.com/{repository}/issues/{number}",
+            "open",
+        )
 
 
 class CLITests(unittest.TestCase):
@@ -127,6 +163,101 @@ class CLITests(unittest.TestCase):
             )
             self.assertEqual(code, 2)
             self.assertIn("goal not found", error)
+
+    def test_maintain_runs_issue_workflow_and_exposes_traces(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "parser.py").write_text("def parse(value): return value\n", encoding="utf-8")
+            provider = ScriptedProvider(
+                [
+                    '{"tasks":[{"task_id":"proposal","task_type":"maintenance",'
+                    '"description":"Propose a fix","acceptance_criteria":{}}]}',
+                    '{"type":"final","content":"Issue interpretation: empty input\\n'
+                    'Relevant files: parser.py\\nProposed changes: guard empty input\\n'
+                    'Tests: empty input\\nRisks: none"}',
+                    '{"verdict":"PASS","score":90,"defects":[],"summary":"Accepted"}',
+                ]
+            )
+            database = str(root / "maintain.db")
+            with patch("agent_society_loop.cli.GitHubIssueClient", FakeIssueClient), patch(
+                "agent_society_loop.cli._provider_from_environment", return_value=provider
+            ):
+                code, output, error = self.run_cli(
+                    [
+                        "maintain",
+                        "owner/repo",
+                        "12",
+                        "--workspace",
+                        str(root),
+                        "--db",
+                        database,
+                        "--goal-id",
+                        "maintain-12",
+                        "--json",
+                    ]
+                )
+
+            report = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(report["status"], "succeeded")
+
+            code, output, _ = self.run_cli(
+                ["traces", "maintain-12", "--db", database, "--json"]
+            )
+            traces = json.loads(output)
+            self.assertEqual(code, 0)
+            self.assertTrue(traces)
+            self.assertTrue(all(trace["trace_id"] == "maintain-12" for trace in traces))
+
+            code, output, _ = self.run_cli(
+                ["approvals", "maintain-12", "--db", database, "--json"]
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(output), [])
+
+    def test_approve_and_reject_commands_resolve_paused_goals(self):
+        for command, expected in (("approve", ApprovalStatus.APPROVED), ("reject", ApprovalStatus.REJECTED)):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as directory:
+                database = str(Path(directory) / "approval.db")
+                repository = SQLiteRepository(database)
+                goal = replace(
+                    Goal.create("Approval", "Resolve it", goal_id="approval-goal"),
+                    status=GoalStatus.PAUSED,
+                )
+                approval = ApprovalRequest.create(
+                    goal.goal_id,
+                    "task",
+                    "write_file",
+                    {"path": "candidate.txt"},
+                    "write tool requires approval",
+                )
+                repository.save_goal(goal)
+                repository.save_approval(approval)
+                repository.close()
+
+                code, output, error = self.run_cli(
+                    [
+                        command,
+                        approval.approval_id,
+                        "--by",
+                        "operator",
+                        "--db",
+                        database,
+                        "--json",
+                    ]
+                )
+
+                self.assertEqual((code, error), (0, ""))
+                self.assertEqual(json.loads(output)["status"], expected.value)
+                reopened = SQLiteRepository(database)
+                self.assertEqual(
+                    reopened.get_approval(approval.approval_id).status, expected
+                )
+                if command == "reject":
+                    self.assertEqual(
+                        reopened.get_goal(goal.goal_id).status, GoalStatus.FAILED
+                    )
+                reopened.close()
 
 
 if __name__ == "__main__":

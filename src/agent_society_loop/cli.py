@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from dataclasses import asdict, is_dataclass
@@ -13,8 +14,11 @@ from typing import Any, Sequence
 
 from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import AgentProfile, Goal, RunBudget, Task
-from .engine import LoopEngine
+from .engine import LoopEngine, resolve_approval
+from .github import GitHubIssueClient
+from .maintenance import build_maintenance_engine, create_maintenance_goal
 from .memory import MemoryManager
+from .providers import OpenAICompatibleProvider
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
 
@@ -136,7 +140,27 @@ def _status(repository: SQLiteRepository, goal_id: str) -> dict[str, Any]:
         "attempts": repository.list_attempts(goal_id),
         "reviews": repository.list_reviews(goal_id),
         "artifacts": repository.list_artifacts(goal_id),
+        "approvals": repository.list_approvals(goal_id),
+        "spans": repository.list_spans(goal_id),
     }
+
+
+def _provider_from_environment() -> OpenAICompatibleProvider:
+    api_key = os.environ.get("MODEL_API_KEY", "")
+    model = os.environ.get("MODEL_ID", "")
+    if not api_key or not model:
+        raise ValueError("MODEL_API_KEY and MODEL_ID are required")
+    return OpenAICompatibleProvider(
+        api_key,
+        os.environ.get("MODEL_BASE_URL", "https://api.openai.com/v1"),
+        model,
+        response_format={"type": "json_object"},
+    )
+
+
+def _maintenance_goal_id(repository: str, issue: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", repository.casefold()).strip("-")
+    return f"maintain-{slug}-{issue}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -169,6 +193,33 @@ def build_parser() -> argparse.ArgumentParser:
     agents = commands.add_parser("agents", help="inspect agents and social memory")
     agents.add_argument("--db", default="agent-society.db")
     agents.add_argument("--json", action="store_true")
+
+    maintain = commands.add_parser(
+        "maintain", help="inspect a GitHub issue and produce a reviewed proposal"
+    )
+    maintain.add_argument("repository")
+    maintain.add_argument("issue", type=int)
+    maintain.add_argument("--workspace", required=True)
+    maintain.add_argument("--goal-id")
+    maintain.add_argument("--db", default="agent-society.db")
+    maintain.add_argument("--json", action="store_true")
+
+    traces = commands.add_parser("traces", help="inspect linked execution spans")
+    traces.add_argument("goal_id")
+    traces.add_argument("--db", default="agent-society.db")
+    traces.add_argument("--json", action="store_true")
+
+    approvals = commands.add_parser("approvals", help="inspect durable approvals")
+    approvals.add_argument("goal_id")
+    approvals.add_argument("--db", default="agent-society.db")
+    approvals.add_argument("--json", action="store_true")
+
+    for name in ("approve", "reject"):
+        decision = commands.add_parser(name, help=f"{name} a pending tool call")
+        decision.add_argument("approval_id")
+        decision.add_argument("--by", required=True)
+        decision.add_argument("--db", default="agent-society.db")
+        decision.add_argument("--json", action="store_true")
 
     knowledge = commands.add_parser("knowledge", help="manage long-term knowledge")
     knowledge_commands = knowledge.add_subparsers(dest="knowledge_command", required=True)
@@ -253,6 +304,56 @@ def main(argv: Sequence[str] | None = None) -> int:
             _emit(value, args.json, f"{len(value)} registered agents")
             return 0
 
+        if args.command == "maintain":
+            provider = _provider_from_environment()
+            engine = build_maintenance_engine(
+                repository, provider, Path(args.workspace)
+            )
+            goal_id = args.goal_id or _maintenance_goal_id(
+                args.repository, args.issue
+            )
+            goal = repository.get_goal(goal_id)
+            if goal is None:
+                issue = GitHubIssueClient(
+                    token=os.environ.get("GITHUB_TOKEN", "")
+                ).get_issue(args.repository, args.issue)
+                goal = create_maintenance_goal(engine, issue, goal_id=goal_id)
+            report = engine.resume(goal.goal_id)
+            _emit(
+                report,
+                args.json,
+                f"Goal {report.goal_id}: {report.status.value}",
+            )
+            if report.status.value == "succeeded":
+                return 0
+            if report.status.value == "paused":
+                return 3
+            return 1
+
+        if args.command == "traces":
+            if repository.get_goal(args.goal_id) is None:
+                raise KeyError(f"goal not found: {args.goal_id}")
+            value = repository.list_spans(args.goal_id)
+            _emit(value, args.json, f"{len(value)} trace spans")
+            return 0
+
+        if args.command == "approvals":
+            if repository.get_goal(args.goal_id) is None:
+                raise KeyError(f"goal not found: {args.goal_id}")
+            value = repository.list_approvals(args.goal_id)
+            _emit(value, args.json, f"{len(value)} approval requests")
+            return 0
+
+        if args.command in {"approve", "reject"}:
+            value = resolve_approval(
+                repository,
+                args.approval_id,
+                approved=args.command == "approve",
+                decided_by=args.by,
+            )
+            _emit(value, args.json, f"Approval {value.approval_id}: {value.status.value}")
+            return 0
+
         memory = MemoryManager(repository)
         if args.knowledge_command == "add":
             knowledge_id = memory.add_knowledge(args.title, args.content, args.tag)
@@ -265,7 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         results = memory.search_knowledge(args.query, args.tag, limit=args.limit)
         _emit(results, args.json, f"{len(results)} matching knowledge items")
         return 0
-    except (KeyError, ValueError, OSError) as error:
+    except (KeyError, ValueError, OSError, RuntimeError) as error:
         message = error.args[0] if isinstance(error, KeyError) else str(error)
         print(f"error: {message}", file=sys.stderr)
         return 2
