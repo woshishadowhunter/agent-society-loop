@@ -69,6 +69,13 @@ class SpanStatus(str, Enum):
     ERROR = "error"
 
 
+class PublicationStatus(str, Enum):
+    PREPARED = "prepared"
+    COMMITTED = "committed"
+    PUSHED = "pushed"
+    PULL_REQUEST_CREATED = "pull_request_created"
+
+
 @dataclass(frozen=True, slots=True)
 class Goal:
     goal_id: str
@@ -524,6 +531,69 @@ class VerificationResult:
             stdout,
             stderr,
             workspace_digest.strip(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationRecord:
+    publication_id: str
+    goal_id: str
+    payload_digest: str
+    repository: str
+    remote: str
+    branch: str
+    base_branch: str
+    title: str
+    body: str
+    base_head_sha: str
+    changed_paths: tuple[str, ...]
+    workspace_digest: str
+    check_names: tuple[str, ...]
+    status: PublicationStatus = PublicationStatus.PREPARED
+    commit_sha: str = ""
+    pull_request_number: int = 0
+    pull_request_url: str = ""
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(cls, goal_id: str, payload: dict[str, Any]) -> PublicationRecord:
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        required = ("repository", "remote", "branch", "base_branch", "title", "body", "base_head_sha", "workspace_digest")
+        if not goal_id.strip() or any(not str(payload.get(name, "")).strip() for name in required):
+            raise ValueError("publication identity fields must not be empty")
+        paths = tuple(sorted(str(item) for item in payload.get("changed_paths", ())))
+        checks = tuple(sorted(str(item) for item in payload.get("check_names", ())))
+        if not paths or not checks:
+            raise ValueError("publication requires changed paths and checks")
+        return cls(
+            f"publication-{digest[:16]}", goal_id, digest,
+            str(payload["repository"]), str(payload["remote"]), str(payload["branch"]),
+            str(payload["base_branch"]), str(payload["title"]), str(payload["body"]),
+            str(payload["base_head_sha"]), paths, str(payload["workspace_digest"]), checks,
+        )
+
+    def advance(
+        self,
+        status: PublicationStatus,
+        *,
+        commit_sha: str = "",
+        pull_request_number: int = 0,
+        pull_request_url: str = "",
+    ) -> PublicationRecord:
+        order = list(PublicationStatus)
+        if order.index(status) < order.index(self.status):
+            raise ValueError("publication status cannot move backwards")
+        if order.index(status) > order.index(self.status) + 1:
+            raise ValueError("publication status cannot skip a state")
+        return replace(
+            self,
+            status=status,
+            commit_sha=commit_sha or self.commit_sha,
+            pull_request_number=pull_request_number or self.pull_request_number,
+            pull_request_url=pull_request_url or self.pull_request_url,
+            updated_at=utc_now(),
         )
 
 

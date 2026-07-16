@@ -2,6 +2,16 @@
 
 All notable changes are documented here.
 
+## 0.4.0 - 2026-07-16
+
+- Added verification-gated Git commit, push, and GitHub pull-request publication.
+- Added durable `prepared -> committed -> pushed -> pull_request_created` records.
+- Added recovery for interruptions after commit, push, or remote PR creation.
+- Added exact publication approval payloads including branch policy, base HEAD, diff digest, paths, and checks.
+- Added goal-owned path staging and rejection of extra, staged, renamed, protected-branch, or stale changes.
+- Added a deterministic publication reviewer gate; model PASS cannot replace a real PR record.
+- Added opt-in `maintain --publish` with configurable base, remote, and branch prefix.
+
 ## 0.3.0 - 2026-07-16
 
 - Added content-addressed, atomic UTF-8 workspace writes with stale-read protection.

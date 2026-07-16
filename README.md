@@ -64,6 +64,18 @@ agent-society maintain owner/repository 123 \
 
 The run pauses before each content-addressed write and named check. Approve the displayed request with `agent-society approve APPROVAL_ID --by NAME --db ../maintain.db`, then repeat the same `maintain` command to resume. Writes are atomic, stale hashes are rejected, checks are bounded and shell-free, and pre-change content is durably recoverable. A deterministic reviewer gate rejects PASS unless every configured check passed against the current workspace digest. This mode still does not commit, push, or create a pull request.
 
+Version 0.4 can publish the verified result from an allowed feature branch. Keep the database outside the workspace and provide a GitHub token:
+
+```bash
+export GITHUB_TOKEN="..."
+agent-society maintain owner/repository 123 \
+  --workspace . --db ../maintain.db --apply \
+  --check "tests=python -m unittest discover -s tests -v" \
+  --publish --base main --remote origin --branch-prefix "agent-society/" --json
+```
+
+Publication has its own exact approval containing the base HEAD, branch policy, changed paths, workspace digest, checks, title, and final PR body. It stages only goal-owned paths and resumes idempotently through commit, push, and PR creation. It never merges or force-pushes.
+
 ## Architecture
 
 ```mermaid
@@ -123,6 +135,7 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society agents` | Inspect agent profiles and performance |
 | `agent-society maintain OWNER/REPO ISSUE` | Produce a reviewed, read-only maintenance proposal |
 | `agent-society maintain ... --apply --check NAME=COMMAND` | Apply approved local changes and run approved named checks |
+| `agent-society maintain ... --publish` | Publish a verified allowed branch as an approved pull request |
 | `agent-society traces GOAL_ID` | Inspect linked model and tool trace spans |
 | `agent-society approvals GOAL_ID` | Inspect pending and resolved tool approvals |
 | `agent-society approve APPROVAL_ID` | Approve a paused write or execute tool call |
@@ -163,7 +176,7 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.3 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. Guarded maintenance edits UTF-8 text and runs operator-configured checks locally, but it cannot delete or rename files, install packages, commit, push, or create pull requests. Distributed workers, concurrent scheduling, MCP/A2A adapters, publication gates, and a web UI remain future work.
+Version 0.4 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. It cannot delete or rename files, install dependencies, merge, force-push, or modify branch protection. Distributed workers, concurrent scheduling, MCP/A2A adapters, champion/challenger evaluation, and a web UI remain future work.
 
 ## Development
 

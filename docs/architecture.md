@@ -21,6 +21,7 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `tracing.py` | Linked, timed, redacted execution spans |
 | `github.py` | Bounded read-only GitHub issue retrieval |
 | `workspace_tools.py` | Bounded inspection, content-addressed writes, recovery, and named checks |
+| `publication.py` | Verification-gated, resumable Git commit, push, and pull-request publication |
 | `maintenance.py` | GitHub issue maintenance composition root |
 | `cli.py` | Goal execution and operational inspection |
 
@@ -102,7 +103,9 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Verification commands are operator configured, selected by name, shell-free, timed, and output bounded.
 - Verification results are tied to a deterministic digest of goal-owned workspace changes.
 - Guarded review rejects model PASS when a required check is missing, failed, or stale.
-- No local tool commits, pushes, or creates a pull request.
+- Publication stages only goal-owned paths and requires current passing checks plus exact approval.
+- Commit, push, and PR creation advance through a durable, idempotent state machine.
+- Publication never merges, force-pushes, or deletes branches.
 
 ## Extension example
 

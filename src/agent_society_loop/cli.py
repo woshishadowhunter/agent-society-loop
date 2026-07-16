@@ -16,11 +16,12 @@ from typing import Any, Sequence
 from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import AgentProfile, Goal, RunBudget, Task
 from .engine import LoopEngine, resolve_approval
-from .github import GitHubIssueClient
+from .github import GitHubIssueClient, GitHubPullRequestClient
 from .maintenance import (
     build_maintenance_engine,
     create_maintenance_goal,
     maintenance_goal_configuration,
+    maintenance_publication_configuration,
 )
 from .memory import MemoryManager
 from .providers import OpenAICompatibleProvider
@@ -149,6 +150,7 @@ def _status(repository: SQLiteRepository, goal_id: str) -> dict[str, Any]:
         "spans": repository.list_spans(goal_id),
         "workspace_snapshots": repository.list_workspace_snapshots(goal_id),
         "verification_results": repository.list_verification_results(goal_id),
+        "publication": repository.get_publication(goal_id),
     }
 
 
@@ -240,6 +242,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--apply",
         action="store_true",
         help="enable approved local UTF-8 writes and named verification checks",
+    )
+    maintain.add_argument(
+        "--publish", action="store_true",
+        help="enable approved commit, push, and pull-request publication",
+    )
+    maintain.add_argument("--base", default="main", help="pull-request base branch")
+    maintain.add_argument("--remote", default="origin", help="Git remote to push")
+    maintain.add_argument(
+        "--branch-prefix", default="agent-society/",
+        help="required prefix for the current publication branch",
     )
     maintain.add_argument(
         "--check",
@@ -359,13 +371,29 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ValueError("--apply requires at least one --check NAME=COMMAND")
             if checks and not args.apply:
                 raise ValueError("--check requires --apply")
+            if args.publish and not args.apply:
+                raise ValueError("--publish requires --apply")
+            protected_database = _database_protected_paths(args.db, workspace)
+            if args.publish and protected_database:
+                raise ValueError("publication requires --db outside the workspace")
+            pull_request_client = None
+            if args.publish:
+                pull_request_client = GitHubPullRequestClient(
+                    os.environ.get("GITHUB_TOKEN", "")
+                )
             engine = build_maintenance_engine(
                 repository,
                 provider,
                 workspace,
                 apply=args.apply,
                 checks=checks,
-                protected_paths=_database_protected_paths(args.db, workspace),
+                protected_paths=protected_database,
+                publish=args.publish,
+                pull_request_client=pull_request_client,
+                github_repository=args.repository,
+                base_branch=args.base,
+                remote=args.remote,
+                branch_prefix=args.branch_prefix,
             )
             goal_id = args.goal_id or _maintenance_goal_id(
                 args.repository, args.issue
@@ -382,12 +410,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     apply=args.apply,
                     workspace=workspace if args.apply else None,
                     check_names=tuple(checks),
+                    publish=args.publish,
+                    base_branch=args.base,
+                    remote=args.remote,
+                    branch_prefix=args.branch_prefix,
                 )
             else:
                 stored_apply, stored_checks = maintenance_goal_configuration(goal)
                 if stored_apply != args.apply or stored_checks != tuple(sorted(checks)):
                     raise ValueError(
                         "maintenance resume must use the original apply mode and check names"
+                    )
+                stored_publication = maintenance_publication_configuration(goal)
+                requested_publication = {
+                    "enabled": args.publish,
+                    "base_branch": args.base,
+                    "remote": args.remote,
+                    "branch_prefix": args.branch_prefix,
+                }
+                if stored_publication != requested_publication:
+                    raise ValueError(
+                        "maintenance resume must use the original publication configuration"
                     )
             report = engine.resume(goal.goal_id)
             _emit(

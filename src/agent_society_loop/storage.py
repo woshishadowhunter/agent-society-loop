@@ -21,6 +21,8 @@ from .domain import (
     GoalStatus,
     KnowledgeItem,
     PerformanceRecord,
+    PublicationRecord,
+    PublicationStatus,
     Review,
     Task,
     TaskStatus,
@@ -145,6 +147,12 @@ class SQLiteRepository:
             );
             CREATE INDEX IF NOT EXISTS verification_results_goal_idx
                 ON verification_results(goal_id, task_id, check_name);
+            CREATE TABLE IF NOT EXISTS publication_records (
+                goal_id TEXT PRIMARY KEY,
+                publication_id TEXT UNIQUE NOT NULL,
+                payload_digest TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
             """
         )
         self.connection.commit()
@@ -539,3 +547,28 @@ class SQLiteRepository:
             data["command"] = tuple(data["command"])
             results.append(VerificationResult(**data))
         return results
+
+    def save_publication(self, publication: PublicationRecord) -> None:
+        existing = self.get_publication(publication.goal_id)
+        if existing is not None and existing.payload_digest != publication.payload_digest:
+            raise ValueError("publication payload cannot change for a goal")
+        if existing is not None and list(PublicationStatus).index(publication.status) < list(PublicationStatus).index(existing.status):
+            raise ValueError("publication status cannot move backwards")
+        self.connection.execute(
+            "INSERT INTO publication_records(goal_id, publication_id, payload_digest, payload) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(goal_id) DO UPDATE SET payload=excluded.payload",
+            (publication.goal_id, publication.publication_id, publication.payload_digest, _dump(asdict(publication))),
+        )
+        self.connection.commit()
+
+    def get_publication(self, goal_id: str) -> PublicationRecord | None:
+        row = self.connection.execute(
+            "SELECT payload FROM publication_records WHERE goal_id=?", (goal_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = _load(row["payload"])
+        data["status"] = PublicationStatus(data["status"])
+        data["changed_paths"] = tuple(data["changed_paths"])
+        data["check_names"] = tuple(data["check_names"])
+        return PublicationRecord(**data)

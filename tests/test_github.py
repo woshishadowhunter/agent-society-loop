@@ -3,7 +3,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from agent_society_loop.github import GitHubIssueClient
+from agent_society_loop.github import GitHubIssueClient, GitHubPullRequestClient
 
 
 class GitHubHandler(BaseHTTPRequestHandler):
@@ -92,6 +92,56 @@ class GitHubIssueClientTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "too large"):
             client.get_issue("owner/repo", 12)
+
+
+class PullRequestHandler(BaseHTTPRequestHandler):
+    requests = []
+
+    def do_GET(self):
+        type(self).requests.append(("GET", self.path, None, self.headers.get("Authorization")))
+        self._send([])
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        body = json.loads(self.rfile.read(length).decode("utf-8"))
+        type(self).requests.append(("POST", self.path, body, self.headers.get("Authorization")))
+        self._send({"number": 21, "html_url": "https://github.com/owner/repo/pull/21"})
+
+    def _send(self, value):
+        payload = json.dumps(value).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *args):
+        return
+
+
+class GitHubPullRequestClientTests(unittest.TestCase):
+    def test_create_or_get_searches_before_creating_without_leaking_token(self):
+        PullRequestHandler.requests = []
+        server = HTTPServer(("127.0.0.1", 0), PullRequestHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = GitHubPullRequestClient(
+                "private-token", f"http://127.0.0.1:{server.server_port}"
+            )
+            result = client.create_or_get(
+                "owner/repo", "agent-society/fix", "main", "Fix", "Body"
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(result.number, 21)
+        self.assertEqual([item[0] for item in PullRequestHandler.requests], ["GET", "POST"])
+        self.assertIn("head=owner%3Aagent-society%2Ffix", PullRequestHandler.requests[0][1])
+        self.assertEqual(PullRequestHandler.requests[1][2]["base"], "main")
+        self.assertEqual(PullRequestHandler.requests[1][3], "Bearer private-token")
 
 
 if __name__ == "__main__":

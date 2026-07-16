@@ -5,6 +5,8 @@ from .domain import (
     ApprovalStatus,
     Goal,
     GoalStatus,
+    PublicationRecord,
+    PublicationStatus,
     Review,
     RunBudget,
     Task,
@@ -21,6 +23,8 @@ __all__ = [
     "ApprovalStatus",
     "Goal",
     "GoalStatus",
+    "PublicationRecord",
+    "PublicationStatus",
     "Review",
     "RunBudget",
     "Task",
@@ -32,4 +36,4 @@ __all__ = [
     "WorkspaceSnapshot",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

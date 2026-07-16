@@ -14,6 +14,8 @@ from agent_society_loop.domain import (
     Goal,
     GoalStatus,
     PerformanceRecord,
+    PublicationRecord,
+    PublicationStatus,
     Review,
     Task,
     SpanStatus,
@@ -26,6 +28,23 @@ from agent_society_loop.storage import SQLiteRepository
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
+    def test_publication_record_survives_and_rejects_payload_change(self):
+        repository = SQLiteRepository(":memory:")
+        payload = {
+            "repository": "owner/repo", "remote": "origin", "branch": "agent-society/fix",
+            "base_branch": "main", "title": "Fix", "body": "Body",
+            "base_head_sha": "base-sha",
+            "changed_paths": ["a.py"], "workspace_digest": "digest", "check_names": ["tests"],
+        }
+        publication = PublicationRecord.create("goal", payload)
+        repository.save_publication(publication)
+        committed = publication.advance(PublicationStatus.COMMITTED, commit_sha="abc")
+        repository.save_publication(committed)
+
+        self.assertEqual(repository.get_publication("goal"), committed)
+        with self.assertRaisesRegex(ValueError, "payload"):
+            repository.save_publication(PublicationRecord.create("goal", payload | {"title": "Other"}))
+        repository.close()
     def test_workspace_snapshot_and_verification_survive_database_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "society.db"

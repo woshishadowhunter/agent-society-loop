@@ -62,6 +62,20 @@ class CLITests(unittest.TestCase):
 
         self.assertTrue(args.apply)
         self.assertEqual(args.checks, ["tests=python -m unittest"])
+
+    def test_maintain_publish_parser_captures_branch_policy(self):
+        args = build_parser().parse_args(
+            [
+                "maintain", "owner/repo", "12", "--workspace", ".", "--apply",
+                "--check", "tests=python -m unittest", "--publish",
+                "--base", "main", "--remote", "upstream",
+                "--branch-prefix", "agent-society/",
+            ]
+        )
+
+        self.assertTrue(args.publish)
+        self.assertEqual(args.remote, "upstream")
+        self.assertEqual(args.branch_prefix, "agent-society/")
     def run_cli(self, argv):
         stdout = io.StringIO()
         stderr = io.StringIO()

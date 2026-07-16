@@ -6,12 +6,15 @@ import json
 from pathlib import Path
 import subprocess
 
-from .domain import AgentProfile, Defect, Goal, Review, RunBudget, Task, Verdict
+from .domain import (
+    AgentProfile, Defect, Goal, PublicationStatus, Review, RunBudget, Task, Verdict,
+)
 from .engine import LoopEngine
 from .github import GitHubIssue
 from .memory import MemoryManager
 from .model_agents import ModelPlanner, ModelReviewer, ModelWorker
 from .ports import ModelProvider
+from .publication import PullRequestClient, WorkspacePublishPullRequestTool
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
 from .tools import DefaultToolPolicy, ToolContext, ToolExecutor, ToolRegistry
@@ -92,6 +95,25 @@ class VerificationGateReviewer:
         )
 
 
+class PublicationGateReviewer:
+    def __init__(self, delegate: object, repository: SQLiteRepository):
+        self.delegate = delegate
+        self.repository = repository
+
+    def review(self, task: Task, artifact: str, attempt_no: int) -> Review:
+        review = self.delegate.review(task, artifact, attempt_no)
+        if review.verdict == Verdict.FAIL:
+            return review
+        publication = self.repository.get_publication(task.goal_id)
+        if publication is not None and publication.status == PublicationStatus.PULL_REQUEST_CREATED:
+            return review
+        return Review.create(
+            task.goal_id, task.task_id, attempt_no, Verdict.FAIL, min(review.score, 60.0),
+            [Defect("publication", "no completed pull request publication exists", "use workspace_publish_pull_request after all checks pass")],
+            "Publication gate failed: pull request not created",
+        )
+
+
 def build_maintenance_engine(
     repository: SQLiteRepository,
     provider: ModelProvider,
@@ -100,6 +122,12 @@ def build_maintenance_engine(
     apply: bool = False,
     checks: dict[str, tuple[str, ...]] | None = None,
     protected_paths: tuple[str, ...] = (),
+    publish: bool = False,
+    pull_request_client: PullRequestClient | None = None,
+    github_repository: str = "",
+    base_branch: str = "main",
+    remote: str = "origin",
+    branch_prefix: str = "agent-society/",
     max_actions: int = 30,
     max_tool_steps: int = 12,
 ) -> LoopEngine:
@@ -124,8 +152,25 @@ def build_maintenance_engine(
                 WorkspaceRestoreChangesTool(workspace, repository),
             ]
         )
+        if publish:
+            if pull_request_client is None or not github_repository.strip():
+                raise ValueError("publication requires GitHub repository and pull-request client")
+            tools.append(
+                WorkspacePublishPullRequestTool(
+                    workspace,
+                    repository,
+                    pull_request_client,
+                    github_repository=github_repository,
+                    check_names=tuple(checks),
+                    base_branch=base_branch,
+                    remote=remote,
+                    branch_prefix=branch_prefix,
+                )
+            )
     elif checks:
         raise ValueError("named checks require guarded apply mode")
+    if publish and not apply:
+        raise ValueError("publication requires guarded apply mode")
     registry = ToolRegistry(tools)
     executor = ToolExecutor(
         registry,
@@ -155,6 +200,8 @@ def build_maintenance_engine(
         reviewer = VerificationGateReviewer(
             reviewer, repository, diff_tool, tuple(checks or {})
         )
+        if publish:
+            reviewer = PublicationGateReviewer(reviewer, repository)
     return LoopEngine(
         planner=ModelPlanner(provider, tracer),
         workers={MAINTAINER_AGENT_ID: worker},
@@ -175,6 +222,10 @@ def create_maintenance_goal(
     apply: bool = False,
     workspace: str | Path | None = None,
     check_names: tuple[str, ...] = (),
+    publish: bool = False,
+    base_branch: str = "main",
+    remote: str = "origin",
+    branch_prefix: str = "agent-society/",
 ) -> Goal:
     if apply:
         if workspace is None:
@@ -184,6 +235,8 @@ def create_maintenance_goal(
         _require_clean_tracked_workspace(workspace)
     elif check_names:
         raise ValueError("named checks require guarded apply mode")
+    if publish and not apply:
+        raise ValueError("publication requires guarded apply mode")
     boundary = (
         "Inspect the local checkout, implement content-addressed UTF-8 changes, "
         "run every configured named check, repair failures, and report the final "
@@ -203,10 +256,24 @@ def create_maintenance_goal(
         "body": issue.body,
         "labels": list(issue.labels),
         "execution_mode": "guarded_apply" if apply else "read_only",
-        "operating_boundary": boundary,
+        "operating_boundary": (
+            boundary.replace(
+                "Do not commit, push, or create a pull request.",
+                "Publish only through the verification-gated pull-request tool. Do not merge or force-push.",
+            )
+            if publish else boundary
+        ),
         "checks": sorted(check_names),
+        "publication": {
+            "enabled": publish,
+            "base_branch": base_branch,
+            "remote": remote,
+            "branch_prefix": branch_prefix,
+        },
         "required_output_sections": (
-            ["Issue interpretation", "Changed files", "Checks", "Risks"]
+            ["Issue interpretation", "Changed files", "Checks", "Pull request", "Risks"]
+            if publish
+            else ["Issue interpretation", "Changed files", "Checks", "Risks"]
             if apply
             else [
                 "Issue interpretation",
@@ -236,6 +303,22 @@ def maintenance_goal_configuration(goal: Goal) -> tuple[bool, tuple[str, ...]]:
     if not isinstance(checks, list) or any(not isinstance(item, str) for item in checks):
         raise ValueError("maintenance goal has invalid checks")
     return mode == "guarded_apply", tuple(sorted(checks))
+
+
+def maintenance_publication_configuration(goal: Goal) -> dict[str, object]:
+    try:
+        evidence = json.loads(goal.description)
+    except json.JSONDecodeError as error:
+        raise ValueError("maintenance goal has invalid configuration") from error
+    publication = evidence.get("publication", {})
+    if not isinstance(publication, dict) or not isinstance(publication.get("enabled", False), bool):
+        raise ValueError("maintenance goal has invalid publication configuration")
+    return {
+        "enabled": publication.get("enabled", False),
+        "base_branch": publication.get("base_branch", "main"),
+        "remote": publication.get("remote", "origin"),
+        "branch_prefix": publication.get("branch_prefix", "agent-society/"),
+    }
 
 
 def _require_clean_tracked_workspace(workspace: str | Path) -> None:

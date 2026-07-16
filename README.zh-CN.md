@@ -112,6 +112,18 @@ agent-society maintain owner/repository 123 \
 
 每次内容寻址写入和命名检查前，目标都会暂停。使用 `agent-society approve APPROVAL_ID --by NAME --db ../maintain.db` 批准后，重复原 `maintain` 命令即可恢复。写入采用原子替换并拒绝过期哈希，检查无 Shell、有限时且限制输出，修改前内容可持久恢复。确定性质检门禁会拒绝缺少验证证据的 PASS，并要求所有检查都在当前工作区摘要上真实通过。这个模式仍不会提交、推送或创建 Pull Request。
 
+v0.4 可以从符合策略的功能分支发布已验证结果。数据库必须放在工作区之外，并提供 GitHub Token：
+
+```bash
+export GITHUB_TOKEN="..."
+agent-society maintain owner/repository 123 \
+  --workspace . --db ../maintain.db --apply \
+  --check "tests=python -m unittest discover -s tests -v" \
+  --publish --base main --remote origin --branch-prefix "agent-society/" --json
+```
+
+发布拥有独立的精确审批，包含基线 HEAD、分支策略、变更路径、工作区摘要、检查、标题和最终 PR 正文。系统只暂存目标拥有的路径，并通过提交、推送、创建 PR 的持久状态机幂等恢复；永远不会合并或强制推送。
+
 ## 常用命令
 
 | 命令 | 用途 |
@@ -123,6 +135,7 @@ agent-society maintain owner/repository 123 \
 | `agent-society agents` | 查看 Agent 档案和绩效 |
 | `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
 | `agent-society maintain ... --apply --check NAME=COMMAND` | 应用获批的本地修改并运行获批的命名检查 |
+| `agent-society maintain ... --publish` | 将已验证的合规分支发布为获批 Pull Request |
 | `agent-society traces GOAL_ID` | 查看模型与工具的关联 Trace |
 | `agent-society approvals GOAL_ID` | 查看待处理及已处理审批 |
 | `agent-society approve APPROVAL_ID` | 批准暂停中的写入或执行工具 |
@@ -158,7 +171,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.3 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。受控维护可以编辑 UTF-8 文本并运行操作者配置的本地检查，但不能删除或重命名文件、安装依赖、提交、推送或创建 Pull Request。分布式队列、并发调度、MCP/A2A 适配器、发布门禁和 Web 控制台仍属于后续工作。
+v0.4 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。系统不能删除或重命名文件、安装依赖、合并、强制推送或修改分支保护。分布式队列、并发调度、MCP/A2A 适配器、冠军/挑战者评估和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

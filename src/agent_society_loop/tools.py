@@ -103,8 +103,11 @@ class ToolExecutor:
         _validate_arguments(tool.input_schema, arguments)
         if self.policy.requires_approval(tool, context):
             approval_arguments = dict(arguments)
+            contextual_enrich = getattr(tool, "approval_arguments_with_context", None)
             enrich = getattr(tool, "approval_arguments", None)
-            if callable(enrich):
+            if callable(contextual_enrich):
+                approval_arguments = contextual_enrich(dict(arguments), context)
+            elif callable(enrich):
                 approval_arguments = enrich(dict(arguments))
             requested = ApprovalRequest.create(
                 context.goal_id,
