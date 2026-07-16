@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from agent_society_loop.domain import Goal, GoalStatus, Task, TaskStatus
+from agent_society_loop.domain import (
+    Artifact,
+    Attempt,
+    Event,
+    Goal,
+    GoalStatus,
+    PerformanceRecord,
+    Review,
+    Task,
+    TaskStatus,
+    Verdict,
+)
 from agent_society_loop.scheduler import ClaimStatus, WorkerSession
 
 
@@ -132,3 +143,127 @@ class ClaimNextTaskContract:
                 now=AT,
                 lease_seconds=30,
             )
+
+
+class OutcomeReconciliationContract:
+    """Terminal goal state must share the fenced outcome transaction."""
+
+    first: object
+
+    def seed_outcome_graph(self, other_status: TaskStatus = TaskStatus.PENDING):
+        goal = replace(
+            Goal.create("Goal", "Reconcile", goal_id="reconcile"),
+            status=GoalStatus.RUNNING,
+        )
+        claimed_task = Task.create("reconcile", "claimed", "analysis", "Claimed")
+        other_task = replace(
+            Task.create("reconcile", "other", "analysis", "Other", position=1),
+            status=other_status,
+        )
+        self.first.save_goal(goal)
+        self.first.save_tasks((claimed_task, other_task))
+        self.first.register_worker(
+            WorkerSession.create(
+                "worker-r",
+                "session-r",
+                ("analysis",),
+                now=AT,
+                ttl_seconds=60,
+            )
+        )
+        claim = self.first.claim_task(
+            "reconcile",
+            "claimed",
+            "worker-r",
+            "session-r",
+            "agent-r",
+            now=AT,
+            lease_seconds=30,
+        )
+        return claim, claimed_task
+
+    def commit_reconciled_outcome(self, task_status: TaskStatus, other_status: TaskStatus):
+        claim, original = self.seed_outcome_graph(other_status)
+        passing = task_status == TaskStatus.SUCCEEDED
+        artifact = (
+            Artifact.create("reconcile", "claimed", "agent-r", "accepted")
+            if passing
+            else None
+        )
+        review = Review.create(
+            "reconcile",
+            "claimed",
+            1,
+            Verdict.PASS if passing else Verdict.FAIL,
+            90 if passing else 0,
+            (),
+            "accepted" if passing else "not accepted",
+        )
+        attempt = Attempt.create(
+            "reconcile",
+            "claimed",
+            "agent-r",
+            1,
+            10,
+            artifact.artifact_id if artifact else None,
+            review.review_id,
+        )
+        performance = PerformanceRecord(
+            "agent-r", "analysis", 1, int(passing), 90 if passing else 0, 10
+        )
+        task = replace(
+            original,
+            status=task_status,
+            assigned_agent_id="agent-r",
+            artifact_id=artifact.artifact_id if artifact else None,
+        )
+        self.first.commit_claim_outcome(
+            claim,
+            task,
+            artifact,
+            attempt,
+            review,
+            performance,
+            (Event.create("reconcile", "task.attempt_completed", {}),),
+            now="2026-07-16T00:00:01+00:00",
+        )
+        return self.first.get_goal("reconcile"), self.first.list_events("reconcile")
+
+    def test_last_successful_outcome_completes_goal_atomically(self) -> None:
+        goal, events = self.commit_reconciled_outcome(
+            TaskStatus.SUCCEEDED, TaskStatus.SUCCEEDED
+        )
+
+        self.assertEqual(goal.status, GoalStatus.SUCCEEDED)
+        self.assertEqual(
+            [event.event_type for event in events].count("goal.succeeded"), 1
+        )
+
+    def test_failed_outcome_fails_goal_atomically(self) -> None:
+        goal, events = self.commit_reconciled_outcome(
+            TaskStatus.FAILED, TaskStatus.PENDING
+        )
+
+        self.assertEqual(goal.status, GoalStatus.FAILED)
+        self.assertIn("claimed", goal.failure_reason)
+        self.assertEqual([event.event_type for event in events].count("goal.failed"), 1)
+
+    def test_blocked_outcome_blocks_goal_atomically(self) -> None:
+        goal, events = self.commit_reconciled_outcome(
+            TaskStatus.BLOCKED, TaskStatus.PENDING
+        )
+
+        self.assertEqual(goal.status, GoalStatus.BLOCKED)
+        self.assertIn("claimed", goal.failure_reason)
+        self.assertEqual([event.event_type for event in events].count("goal.blocked"), 1)
+
+    def test_nonterminal_outcome_keeps_goal_running(self) -> None:
+        goal, events = self.commit_reconciled_outcome(
+            TaskStatus.SUCCEEDED, TaskStatus.PENDING
+        )
+
+        self.assertEqual(goal.status, GoalStatus.RUNNING)
+        self.assertFalse(
+            {"goal.succeeded", "goal.failed", "goal.blocked"}
+            & {event.event_type for event in events}
+        )

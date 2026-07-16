@@ -45,6 +45,7 @@ from .domain import (
     VerificationResult,
     Verdict,
     WorkspaceSnapshot,
+    transition_goal,
 )
 from .scheduler import (
     ClaimedTask,
@@ -884,6 +885,7 @@ class SQLiteRepository:
                 "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
                 (_dump(asdict(task)), task.goal_id, task.task_id),
             )
+            self._reconcile_goal_locked(task)
             committed = current.finish(ClaimStatus.COMMITTED, now=now)
             self.connection.execute(
                 "UPDATE task_claims SET status=?, payload=? "
@@ -896,6 +898,54 @@ class SQLiteRepository:
                 ),
             )
         return committed
+
+    def _reconcile_goal_locked(self, committed_task: Task) -> None:
+        goal_row = self.connection.execute(
+            "SELECT payload FROM goals WHERE goal_id=?", (committed_task.goal_id,)
+        ).fetchone()
+        if goal_row is None:
+            raise StaleClaim("claimed goal no longer exists")
+        goal_data = _load(goal_row["payload"])
+        goal_data["status"] = GoalStatus(goal_data["status"])
+        goal = Goal(**goal_data)
+        if goal.status != GoalStatus.RUNNING:
+            raise StaleClaim("claimed goal is no longer running")
+
+        target: GoalStatus | None = None
+        reason = ""
+        if committed_task.status == TaskStatus.FAILED:
+            target = GoalStatus.FAILED
+            reason = f"task {committed_task.task_id} failed"
+        elif committed_task.status == TaskStatus.BLOCKED:
+            target = GoalStatus.BLOCKED
+            reason = f"task {committed_task.task_id} blocked"
+        elif committed_task.status == TaskStatus.SUCCEEDED:
+            task_rows = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=?", (committed_task.goal_id,)
+            ).fetchall()
+            tasks = [self._task_from_payload(row["payload"]) for row in task_rows]
+            if tasks and all(task.status == TaskStatus.SUCCEEDED for task in tasks):
+                target = GoalStatus.SUCCEEDED
+
+        if target is None:
+            return
+        updated = transition_goal(goal, target, reason)
+        self.connection.execute(
+            "UPDATE goals SET payload=? WHERE goal_id=?",
+            (_dump(asdict(updated)), updated.goal_id),
+        )
+        event = Event.create(
+            updated.goal_id,
+            f"goal.{target.value}",
+            {
+                "task_id": committed_task.task_id,
+                **({"reason": reason} if reason else {}),
+            },
+        )
+        self.connection.execute(
+            "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+            (event.event_id, event.goal_id, _dump(asdict(event))),
+        )
 
     def save_goal(self, goal: Goal) -> None:
         self.connection.execute(
