@@ -6,12 +6,14 @@ import argparse
 import json
 import os
 import re
+import signal
 import shlex
 import sys
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Sequence
+from uuid import uuid4
 
 from .a2a import (
     A2AHTTPClient,
@@ -56,6 +58,11 @@ from .selection import PerformanceWeightedSelector
 from .scheduler import parse_utc, run_scheduler_self_test
 from .storage import SQLiteRepository
 from .tracing import TraceRecorder
+from .worker_service import (
+    WorkerRunStatus,
+    WorkerService,
+    WorkerServiceConfig,
+)
 
 
 def _jsonable(value: Any) -> Any:
@@ -428,6 +435,22 @@ def build_parser() -> argparse.ArgumentParser:
     enqueue.add_argument("--db", default="agent-society.db")
     enqueue.add_argument("--json", action="store_true")
 
+    worker = commands.add_parser("worker", help="run lease-owned worker processes")
+    worker_commands = worker.add_subparsers(dest="worker_command", required=True)
+    worker_run = worker_commands.add_parser("run", help="claim and execute queued tasks")
+    worker_run.add_argument("--worker-id", required=True)
+    worker_run.add_argument("--session-id")
+    worker_run.add_argument("--agent-id", dest="agent_ids", action="append", required=True)
+    limit = worker_run.add_mutually_exclusive_group()
+    limit.add_argument("--once", action="store_true")
+    limit.add_argument("--max-tasks", type=int)
+    worker_run.add_argument("--heartbeat-ttl", type=int, default=60)
+    worker_run.add_argument("--lease", type=int, default=30)
+    worker_run.add_argument("--renew-interval", type=float, default=10.0)
+    worker_run.add_argument("--poll-interval", type=float, default=1.0)
+    worker_run.add_argument("--db", default="agent-society.db")
+    worker_run.add_argument("--json", action="store_true")
+
     status = commands.add_parser("status", help="inspect goal state and artifacts")
     status.add_argument("goal_id")
     status.add_argument("--db", default="agent-society.db")
@@ -739,6 +762,68 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.command == "enqueue":
                 return 0 if report.status.value == "running" else 1
             return 0 if report.status.value == "succeeded" else 1
+
+        if args.command == "worker":
+            profiles = {profile.agent_id: profile for profile in repository.list_agents()}
+            assignments: dict[str, str] = {}
+            workers = {}
+            for agent_id in args.agent_ids:
+                profile = profiles.get(agent_id)
+                if profile is None:
+                    raise ValueError(f"agent not found: {agent_id}")
+                if profile.role != "worker" or profile.execution_kind != "local":
+                    raise ValueError(f"agent is not a local worker: {agent_id}")
+                if "*" in profile.task_types:
+                    raise ValueError(
+                        f"worker CLI requires explicit task types: {agent_id}"
+                    )
+                for task_type in profile.task_types:
+                    owner = assignments.get(task_type)
+                    if owner is not None and owner != agent_id:
+                        raise ValueError(
+                            f"task type {task_type} is assigned to multiple agents"
+                        )
+                    assignments[task_type] = agent_id
+                workers[agent_id] = SpecWorker(agent_id)
+            config = WorkerServiceConfig(
+                worker_id=args.worker_id,
+                session_id=args.session_id or f"session-{uuid4().hex[:16]}",
+                heartbeat_ttl_seconds=args.heartbeat_ttl,
+                lease_seconds=args.lease,
+                renew_interval_seconds=args.renew_interval,
+                poll_interval_seconds=args.poll_interval,
+            )
+            service = WorkerService(
+                repository=repository,
+                repository_factory=lambda: SQLiteRepository(args.db),
+                workers=workers,
+                assignments=assignments,
+                reviewer=CriteriaReviewer(),
+                config=config,
+            )
+            if args.once:
+                value = service.run_once()
+            else:
+                previous_handlers = {}
+
+                def request_stop(signum, frame):
+                    service.stop()
+
+                try:
+                    for signum in (signal.SIGINT, signal.SIGTERM):
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, request_stop)
+                    value = service.run(max_tasks=args.max_tasks)
+                finally:
+                    for signum, handler in previous_handlers.items():
+                        signal.signal(signum, handler)
+            _emit(
+                value,
+                args.json,
+                f"Worker {args.worker_id}: {value.status.value}"
+                + (f" {value.goal_id}/{value.task_id}" if value.task_id else ""),
+            )
+            return 3 if value.status == WorkerRunStatus.LOST else 0
 
         if args.command == "scheduler":
             if args.scheduler_command == "self-test":
