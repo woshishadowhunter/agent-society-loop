@@ -12,6 +12,7 @@ from typing import Any, Iterable
 from .domain import (
     AgentProfile,
     Artifact,
+    Attempt,
     Defect,
     Event,
     Goal,
@@ -75,6 +76,14 @@ class SQLiteRepository:
                 task_id TEXT NOT NULL,
                 attempt_no INTEGER NOT NULL,
                 payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS attempts (
+                attempt_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(goal_id, task_id, attempt_no)
             );
             CREATE TABLE IF NOT EXISTS events (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,6 +205,61 @@ class SQLiteRepository:
             reviews.append(Review(**data))
         return reviews
 
+    def list_attempts(self, goal_id: str, task_id: str | None = None) -> list[Attempt]:
+        query = "SELECT payload FROM attempts WHERE goal_id=?"
+        parameters: list[Any] = [goal_id]
+        if task_id is not None:
+            query += " AND task_id=?"
+            parameters.append(task_id)
+        query += " ORDER BY attempt_no, rowid"
+        rows = self.connection.execute(query, parameters).fetchall()
+        return [Attempt(**_load(row["payload"])) for row in rows]
+
+    def save_attempt_outcome(
+        self,
+        attempt: Attempt,
+        review: Review,
+        performance: PerformanceRecord,
+        event: Event,
+    ) -> None:
+        """Commit the reviewed outcome and its audit evidence as one unit."""
+        with self.connection:
+            self.connection.execute(
+                "INSERT INTO attempts(attempt_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    attempt.attempt_id,
+                    attempt.goal_id,
+                    attempt.task_id,
+                    attempt.attempt_no,
+                    _dump(asdict(attempt)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO reviews(review_id, goal_id, task_id, attempt_no, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    review.review_id,
+                    review.goal_id,
+                    review.task_id,
+                    review.attempt_no,
+                    _dump(asdict(review)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO performance(agent_id, task_type, payload) VALUES (?, ?, ?) "
+                "ON CONFLICT(agent_id, task_type) DO UPDATE SET payload=excluded.payload",
+                (
+                    performance.agent_id,
+                    performance.task_type,
+                    _dump(asdict(performance)),
+                ),
+            )
+            self.connection.execute(
+                "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                (event.event_id, event.goal_id, _dump(asdict(event))),
+            )
+
     def append_event(self, event: Event) -> Event:
         cursor = self.connection.execute(
             "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
@@ -280,4 +344,3 @@ class SQLiteRepository:
             data["tags"] = tuple(data["tags"])
             result.append(KnowledgeItem(**data))
         return result
-

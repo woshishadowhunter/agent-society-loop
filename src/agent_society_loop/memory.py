@@ -85,6 +85,20 @@ class MemoryManager:
         score: float,
         duration_ms: float,
     ) -> PerformanceRecord:
+        record = self.calculate_outcome(
+            agent_id, task_type, passed, score, duration_ms
+        )
+        self.repository.save_performance(record)
+        return record
+
+    def calculate_outcome(
+        self,
+        agent_id: str,
+        task_type: str,
+        passed: bool,
+        score: float,
+        duration_ms: float,
+    ) -> PerformanceRecord:
         current = self.repository.get_performance(agent_id, task_type)
         if current is None:
             current = PerformanceRecord(agent_id, task_type)
@@ -103,5 +117,4 @@ class MemoryManager:
                 {"passed": passed, "score": float(score), "duration_ms": float(duration_ms)},
             ),
         )
-        self.repository.save_performance(record)
         return record

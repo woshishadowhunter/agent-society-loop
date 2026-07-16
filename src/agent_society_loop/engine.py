@@ -8,6 +8,7 @@ from typing import Mapping
 
 from .domain import (
     Artifact,
+    Attempt,
     Defect,
     Event,
     Goal,
@@ -189,14 +190,37 @@ class LoopEngine:
                     f"Execution failed: {error}",
                 )
             duration_ms = (perf_counter() - started) * 1000.0
-            self.repository.save_review(review)
             passed = (
                 artifact is not None
                 and review.verdict == Verdict.PASS
                 and review.score >= self.budget.min_passing_score
             )
-            self.memory.record_outcome(
+            performance = self.memory.calculate_outcome(
                 decision.agent_id, task.task_type, passed, review.score, duration_ms
+            )
+            attempt = Attempt.create(
+                goal.goal_id,
+                task.task_id,
+                decision.agent_id,
+                attempt_no,
+                duration_ms,
+                artifact.artifact_id if artifact is not None else None,
+                review.review_id,
+                review.summary if artifact is None else "",
+            )
+            completion_event = Event.create(
+                goal.goal_id,
+                "task.attempt_completed",
+                {
+                    "task_id": task.task_id,
+                    "attempt_no": attempt_no,
+                    "agent_id": decision.agent_id,
+                    "passed": passed,
+                    "score": review.score,
+                },
+            )
+            self.repository.save_attempt_outcome(
+                attempt, review, performance, completion_event
             )
             actions += 1
 

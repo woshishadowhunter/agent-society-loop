@@ -149,6 +149,48 @@ class Artifact:
 
 
 @dataclass(frozen=True, slots=True)
+class Attempt:
+    attempt_id: str
+    goal_id: str
+    task_id: str
+    agent_id: str
+    attempt_no: int
+    duration_ms: float
+    artifact_id: str | None
+    review_id: str
+    error: str = ""
+    completed_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        agent_id: str,
+        attempt_no: int,
+        duration_ms: float,
+        artifact_id: str | None,
+        review_id: str,
+        error: str = "",
+    ) -> Attempt:
+        if attempt_no < 1:
+            raise ValueError("attempt_no must be positive")
+        if duration_ms < 0:
+            raise ValueError("duration_ms must not be negative")
+        return cls(
+            f"attempt-{uuid4().hex[:12]}",
+            goal_id,
+            task_id,
+            agent_id,
+            attempt_no,
+            float(duration_ms),
+            artifact_id,
+            review_id,
+            error,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Review:
     review_id: str
     goal_id: str

@@ -33,6 +33,7 @@ class CLITests(unittest.TestCase):
             status = json.loads(output)
             self.assertEqual(code, 0)
             self.assertEqual(len(status["tasks"]), 4)
+            self.assertEqual(len(status["attempts"]), 5)
             self.assertEqual(status["goal"]["status"], "succeeded")
 
             code, output, _ = self.run_cli(

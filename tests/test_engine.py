@@ -132,10 +132,12 @@ class LoopEngineTests(unittest.TestCase):
         self.assertEqual(report.attempts, 3)
         self.assertEqual(report.retries, 1)
         self.assertEqual(report.tasks_succeeded, 2)
+        self.assertEqual(len(self.repository.list_attempts("g1")), 3)
         copy_context = self.worker.calls[-1][1]
         self.assertEqual(copy_context["dependency_artifacts"]["research"], "Evidence from three sources")
         self.assertEqual(copy_context["review_feedback"][-1]["summary"], "Add a customer benefit")
         events = [event.event_type for event in self.repository.list_events("g1")]
+        self.assertEqual(events.count("task.attempt_completed"), 3)
         self.assertIn("task.review_failed", events)
         self.assertEqual(events[-1], "goal.succeeded")
         performance = self.repository.get_performance("worker-a", "copywriting")

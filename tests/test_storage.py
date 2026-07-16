@@ -1,14 +1,18 @@
 import tempfile
 import unittest
 from pathlib import Path
+import sqlite3
 
 from agent_society_loop.domain import (
     AgentProfile,
     Artifact,
+    Attempt,
     Event,
     Goal,
     PerformanceRecord,
+    Review,
     Task,
+    Verdict,
 )
 from agent_society_loop.storage import SQLiteRepository
 
@@ -52,7 +56,45 @@ class SQLiteRepositoryTests(unittest.TestCase):
         self.assertIsNone(repository.get_goal("missing"))
         repository.close()
 
+    def test_attempt_review_performance_and_event_commit_atomically(self):
+        repository = SQLiteRepository(":memory:")
+        goal = Goal.create("Atomic", "Record one outcome", goal_id="atomic")
+        repository.save_goal(goal)
+        review = Review.create("atomic", "task", 1, Verdict.PASS, 88, [], "Accepted")
+        attempt = Attempt.create(
+            "atomic", "task", "worker", 1, 42.0, "artifact-1", review.review_id
+        )
+        performance = PerformanceRecord("worker", "analysis", 1, 1, 88.0, 42.0)
+        event = Event.create("atomic", "task.attempt_completed", {"task_id": "task"})
+
+        repository.save_attempt_outcome(attempt, review, performance, event)
+
+        self.assertEqual(repository.list_attempts("atomic"), [attempt])
+        self.assertEqual(repository.list_reviews("atomic"), [review])
+        self.assertEqual(repository.get_performance("worker", "analysis"), performance)
+        self.assertEqual(repository.list_events("atomic")[-1].event_type, "task.attempt_completed")
+        repository.close()
+
+    def test_attempt_outcome_rolls_back_all_writes_when_one_insert_fails(self):
+        repository = SQLiteRepository(":memory:")
+        goal = Goal.create("Atomic", "Reject a partial write", goal_id="rollback")
+        repository.save_goal(goal)
+        review = Review.create("rollback", "task", 1, Verdict.FAIL, 10, [], "Existing")
+        repository.save_review(review)
+        attempt = Attempt.create(
+            "rollback", "task", "worker", 1, 12.0, None, review.review_id
+        )
+        performance = PerformanceRecord("worker", "analysis", 1, 0, 10.0, 12.0)
+        event = Event.create("rollback", "task.attempt_completed", {"task_id": "task"})
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            repository.save_attempt_outcome(attempt, review, performance, event)
+
+        self.assertEqual(repository.list_attempts("rollback"), [])
+        self.assertIsNone(repository.get_performance("worker", "analysis"))
+        self.assertEqual(repository.list_events("rollback"), [])
+        repository.close()
+
 
 if __name__ == "__main__":
     unittest.main()
-

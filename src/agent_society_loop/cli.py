@@ -133,6 +133,7 @@ def _status(repository: SQLiteRepository, goal_id: str) -> dict[str, Any]:
     return {
         "goal": goal,
         "tasks": repository.list_tasks(goal_id),
+        "attempts": repository.list_attempts(goal_id),
         "reviews": repository.list_reviews(goal_id),
         "artifacts": repository.list_artifacts(goal_id),
     }
@@ -270,4 +271,3 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     finally:
         repository.close()
-
