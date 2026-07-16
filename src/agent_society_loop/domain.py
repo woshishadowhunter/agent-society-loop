@@ -15,6 +15,19 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _redact_sensitive(value: Any, key: str = "") -> Any:
+    sensitive = ("key", "token", "secret", "authorization", "password")
+    if key and any(part in key.casefold() for part in sensitive):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {
+            name: _redact_sensitive(item, str(name)) for name, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_sensitive(item) for item in value]
+    return value
+
+
 class GoalStatus(str, Enum):
     CREATED = "created"
     PLANNING = "planning"
@@ -315,7 +328,7 @@ class ApprovalRequest:
             goal_id=goal_id,
             task_id=task_id,
             tool_name=tool_name,
-            arguments=dict(arguments),
+            arguments=_redact_sensitive(arguments),
             reason=reason.strip(),
         )
 
