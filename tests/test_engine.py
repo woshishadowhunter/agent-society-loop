@@ -3,6 +3,7 @@ from dataclasses import replace
 
 from agent_society_loop.domain import (
     AgentProfile,
+    ApprovalStatus,
     Artifact,
     Defect,
     Goal,
@@ -11,6 +12,7 @@ from agent_society_loop.domain import (
     RunBudget,
     Task,
     TaskStatus,
+    ToolRisk,
     Verdict,
     transition_goal,
 )
@@ -18,6 +20,12 @@ from agent_society_loop.engine import LoopEngine
 from agent_society_loop.memory import MemoryManager
 from agent_society_loop.selection import PerformanceWeightedSelector
 from agent_society_loop.storage import SQLiteRepository
+from agent_society_loop.tools import (
+    DefaultToolPolicy,
+    ToolContext,
+    ToolExecutor,
+    ToolRegistry,
+)
 
 
 class TwoTaskPlanner:
@@ -98,6 +106,40 @@ class SingleTaskPlanner:
         ]
 
 
+class WriteTool:
+    name = "write_candidate"
+    description = "Write a candidate artifact"
+    risk = ToolRisk.WRITE
+    input_schema = {
+        "type": "object",
+        "properties": {"content": {"type": "string"}},
+        "required": ["content"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self):
+        self.calls = 0
+
+    def invoke(self, arguments):
+        self.calls += 1
+        return arguments["content"]
+
+
+class ApprovalWorker:
+    agent_id = "worker-a"
+
+    def __init__(self, executor):
+        self.executor = executor
+
+    def execute(self, task, context):
+        result = self.executor.execute(
+            "write_candidate",
+            {"content": "approved artifact"},
+            ToolContext(task.goal_id, task.task_id, self.agent_id),
+        )
+        return result.output
+
+
 class LoopEngineTests(unittest.TestCase):
     def setUp(self):
         self.repository = SQLiteRepository(":memory:")
@@ -120,6 +162,70 @@ class LoopEngineTests(unittest.TestCase):
             selector=PerformanceWeightedSelector(),
             budget=budget or RunBudget(),
         )
+
+    def approval_engine(self):
+        tool = WriteTool()
+        worker = ApprovalWorker(
+            ToolExecutor(
+                ToolRegistry([tool]),
+                DefaultToolPolicy(),
+                self.repository,
+            )
+        )
+        engine = LoopEngine(
+            planner=SingleTaskPlanner(),
+            workers={"worker-a": worker},
+            reviewer=FeedbackReviewer(),
+            repository=self.repository,
+            memory=self.memory,
+            selector=PerformanceWeightedSelector(),
+        )
+        return engine, tool
+
+    def test_pending_tool_approval_pauses_without_attempt_then_resumes(self):
+        engine, tool = self.approval_engine()
+        goal = engine.create_goal("Maintain", "Prepare candidate", goal_id="approval")
+
+        paused = engine.run(goal.goal_id)
+
+        self.assertEqual(paused.status, GoalStatus.PAUSED)
+        self.assertEqual(paused.attempts, 0)
+        self.assertEqual(paused.actions, 0)
+        self.assertEqual(tool.calls, 0)
+        approval = self.repository.list_approvals(goal.goal_id)[0]
+
+        still_paused = engine.resume(goal.goal_id)
+        self.assertEqual(still_paused.status, GoalStatus.PAUSED)
+        self.assertEqual(len(self.repository.list_approvals(goal.goal_id)), 1)
+
+        resolved = engine.resolve_approval(
+            approval.approval_id, approved=True, decided_by="operator"
+        )
+        completed = engine.resume(goal.goal_id)
+
+        self.assertEqual(resolved.status, ApprovalStatus.APPROVED)
+        self.assertEqual(completed.status, GoalStatus.SUCCEEDED)
+        self.assertEqual(completed.attempts, 1)
+        self.assertEqual(completed.actions, 1)
+        self.assertEqual(tool.calls, 1)
+
+    def test_rejected_tool_approval_fails_without_attempt(self):
+        engine, tool = self.approval_engine()
+        goal = engine.create_goal("Maintain", "Prepare candidate", goal_id="rejected")
+        engine.run(goal.goal_id)
+        approval = self.repository.list_approvals(goal.goal_id)[0]
+
+        resolved = engine.resolve_approval(
+            approval.approval_id, approved=False, decided_by="operator"
+        )
+        report = engine.resume(goal.goal_id)
+
+        self.assertEqual(resolved.status, ApprovalStatus.REJECTED)
+        self.assertEqual(report.status, GoalStatus.FAILED)
+        self.assertEqual(report.attempts, 0)
+        self.assertEqual(report.actions, 0)
+        self.assertIn("rejected", report.reason)
+        self.assertEqual(tool.calls, 0)
 
     def test_runs_outer_and_inner_loops_to_success(self):
         engine = self.engine(TwoTaskPlanner())

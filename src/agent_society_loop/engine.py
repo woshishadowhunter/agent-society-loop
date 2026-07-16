@@ -7,6 +7,8 @@ from time import perf_counter
 from typing import Mapping
 
 from .domain import (
+    ApprovalRequest,
+    ApprovalStatus,
     Artifact,
     Attempt,
     Defect,
@@ -26,6 +28,7 @@ from .memory import MemoryManager
 from .ports import Planner, Reviewer, Worker
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
+from .tools import ApprovalRequired
 
 
 class LoopEngine:
@@ -65,6 +68,28 @@ class LoopEngine:
         if goal.status in {GoalStatus.SUCCEEDED, GoalStatus.FAILED, GoalStatus.BLOCKED}:
             return self._report(goal)
 
+        if goal.status == GoalStatus.PAUSED:
+            approvals = self.repository.list_approvals(goal.goal_id)
+            if any(item.status == ApprovalStatus.PENDING for item in approvals):
+                return self._report(goal)
+            rejected = next(
+                (
+                    item
+                    for item in approvals
+                    if item.status == ApprovalStatus.REJECTED
+                ),
+                None,
+            )
+            if rejected is not None:
+                reason = f"approval rejected for tool {rejected.tool_name}"
+                goal = transition_goal(goal, GoalStatus.FAILED, reason)
+                self.repository.save_goal(goal)
+                self._event(goal.goal_id, "goal.failed", {"reason": reason})
+                return self._report(goal)
+            goal = transition_goal(goal, GoalStatus.RUNNING)
+            self.repository.save_goal(goal)
+            self._event(goal.goal_id, "goal.resumed", {})
+
         if goal.status in {GoalStatus.CREATED, GoalStatus.PLANNING}:
             goal = self._plan(goal)
             if goal.status == GoalStatus.FAILED:
@@ -75,6 +100,41 @@ class LoopEngine:
 
     def resume(self, goal_id: str) -> RunReport:
         return self.run(goal_id)
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        *,
+        approved: bool,
+        decided_by: str,
+    ) -> ApprovalRequest:
+        approval = self.repository.get_approval(approval_id)
+        if approval is None:
+            raise KeyError(f"approval not found: {approval_id}")
+        goal = self.repository.get_goal(approval.goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found: {approval.goal_id}")
+        if goal.status != GoalStatus.PAUSED:
+            raise ValueError(f"goal is not paused: {goal.goal_id}")
+        status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+        resolved = approval.resolve(status, decided_by)
+        self.repository.save_approval(resolved)
+        self._event(
+            goal.goal_id,
+            f"approval.{status.value}",
+            {
+                "approval_id": resolved.approval_id,
+                "task_id": resolved.task_id,
+                "tool_name": resolved.tool_name,
+                "decided_by": resolved.decided_by,
+            },
+        )
+        if status == ApprovalStatus.REJECTED:
+            reason = f"approval rejected for tool {resolved.tool_name}"
+            failed = transition_goal(goal, GoalStatus.FAILED, reason)
+            self.repository.save_goal(failed)
+            self._event(failed.goal_id, "goal.failed", {"reason": reason})
+        return resolved
 
     def _plan(self, goal: Goal) -> Goal:
         if goal.status == GoalStatus.CREATED:
@@ -181,6 +241,21 @@ class LoopEngine:
                 )
                 self.repository.save_artifact(artifact)
                 review = self.reviewer.review(task, content, attempt_no)
+            except ApprovalRequired as error:
+                self.repository.save_task(replace(task, status=TaskStatus.PENDING))
+                reason = f"approval required for tool {error.approval.tool_name}"
+                goal = transition_goal(goal, GoalStatus.PAUSED, reason)
+                self.repository.save_goal(goal)
+                self._event(
+                    goal.goal_id,
+                    "approval.requested",
+                    {
+                        "approval_id": error.approval.approval_id,
+                        "task_id": task.task_id,
+                        "tool_name": error.approval.tool_name,
+                    },
+                )
+                return self._report(goal)
             except Exception as error:
                 review = Review.create(
                     goal.goal_id,
@@ -274,7 +349,7 @@ class LoopEngine:
 
     def _attempt_count(self, goal_id: str) -> int:
         return sum(
-            event.event_type == "task.attempt_started"
+            event.event_type == "task.attempt_completed"
             for event in self.repository.list_events(goal_id)
         )
 
