@@ -421,6 +421,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--remote-poll-interval", type=float, default=0.25)
     run.add_argument("--json", action="store_true")
 
+    enqueue = commands.add_parser(
+        "enqueue", help="plan a JSON goal specification for worker processes"
+    )
+    enqueue.add_argument("spec")
+    enqueue.add_argument("--db", default="agent-society.db")
+    enqueue.add_argument("--json", action="store_true")
+
     status = commands.add_parser("status", help="inspect goal state and artifacts")
     status.add_argument("goal_id")
     status.add_argument("--db", default="agent-society.db")
@@ -701,18 +708,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0 if report.status.value == "succeeded" else 1
 
-        if args.command == "run":
+        if args.command in {"run", "enqueue"}:
             spec = _load_spec(args.spec)
-            remote_limits = A2ALimits(
-                request_timeout=min(10.0, args.remote_timeout),
-                total_timeout=args.remote_timeout,
-                max_polls=args.remote_max_polls,
-                poll_interval=args.remote_poll_interval,
-            )
+            remote_limits = None
+            if args.command == "run":
+                remote_limits = A2ALimits(
+                    request_timeout=min(10.0, args.remote_timeout),
+                    total_timeout=args.remote_timeout,
+                    max_polls=args.remote_max_polls,
+                    poll_interval=args.remote_poll_interval,
+                )
             engine = _build_spec_engine(
                 repository,
                 spec,
-                allow_remote=args.allow_remote,
+                allow_remote=args.allow_remote if args.command == "run" else False,
                 remote_limits=remote_limits,
             )
             goal_id = str(spec.get("goal_id") or "") or None
@@ -721,8 +730,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             goal = engine.create_goal(
                 str(spec["title"]), str(spec["description"]), goal_id=goal_id
             )
-            report = engine.run(goal.goal_id)
+            report = (
+                engine.run(goal.goal_id)
+                if args.command == "run"
+                else engine.plan(goal.goal_id)
+            )
             _emit(report, args.json, f"Goal {report.goal_id}: {report.status.value}")
+            if args.command == "enqueue":
+                return 0 if report.status.value == "running" else 1
             return 0 if report.status.value == "succeeded" else 1
 
         if args.command == "scheduler":

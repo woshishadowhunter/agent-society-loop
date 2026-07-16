@@ -177,6 +177,46 @@ class CLITests(unittest.TestCase):
             self.assertEqual(report["status"], "succeeded")
             self.assertEqual(report["retries"], 1)
 
+    def test_enqueue_plans_json_goal_without_executing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            spec = root / "queued.json"
+            database = root / "queued.db"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "goal_id": "queued-goal",
+                        "title": "Queued work",
+                        "description": "Plan now and execute in workers",
+                        "tasks": [
+                            {
+                                "task_id": "draft",
+                                "task_type": "writing",
+                                "description": "Write the draft",
+                                "output": "Evidence-backed draft",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code, output, error = self.run_cli(
+                ["enqueue", str(spec), "--db", str(database), "--json"]
+            )
+            report = json.loads(output)
+
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(report["status"], "running")
+            self.assertEqual(report["tasks_total"], 1)
+            self.assertEqual(report["attempts"], 0)
+            repository = SQLiteRepository(database)
+            try:
+                self.assertEqual(repository.list_tasks("queued-goal")[0].status.value, "pending")
+                self.assertEqual(repository.list_attempts("queued-goal"), [])
+            finally:
+                repository.close()
+
     def test_invalid_spec_and_missing_goal_return_nonzero(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

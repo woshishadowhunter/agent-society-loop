@@ -113,6 +113,24 @@ class LoopEngine:
     def resume(self, goal_id: str) -> RunReport:
         return self.run(goal_id)
 
+    def plan(self, goal_id: str) -> RunReport:
+        """Persist a validated task graph without executing any task."""
+        goal = self.repository.get_goal(goal_id)
+        if goal is None:
+            raise KeyError(f"goal not found: {goal_id}")
+        if goal.status in {
+            GoalStatus.SUCCEEDED,
+            GoalStatus.FAILED,
+            GoalStatus.BLOCKED,
+            GoalStatus.PAUSED,
+        }:
+            raise ValueError(f"goal cannot be planned in state {goal.status.value}")
+        if goal.status in {GoalStatus.CREATED, GoalStatus.PLANNING}:
+            goal = self._plan(goal)
+        elif not self.repository.list_tasks(goal.goal_id):
+            raise RuntimeError("running goal has no durable task graph")
+        return self._report(goal)
+
     def resolve_approval(
         self,
         approval_id: str,
