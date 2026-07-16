@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -79,6 +80,18 @@ class PublicationStatus(str, Enum):
 class EvaluationStatus(str, Enum):
     EVALUATED = "evaluated"
     PROMOTED = "promoted"
+
+
+class DelegationStatus(str, Enum):
+    PREPARED = "prepared"
+    SUBMITTING = "submitting"
+    ACCEPTED = "accepted"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    INTERRUPTED = "interrupted"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True, slots=True)
@@ -609,6 +622,11 @@ class AgentProfile:
     model_id: str
     task_types: tuple[str, ...] = ("*",)
     enabled: bool = True
+    execution_kind: str = "local"
+
+    def __post_init__(self) -> None:
+        if self.execution_kind not in {"local", "a2a"}:
+            raise ValueError("agent execution_kind must be local or a2a")
 
 
 @dataclass(frozen=True, slots=True)
@@ -674,10 +692,12 @@ class CandidateIdentity:
 class CandidateExecution:
     output: Any
     duration_ms: float
+    evidence: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.duration_ms < 0:
             raise ValueError("candidate duration must not be negative")
+        object.__setattr__(self, "evidence", dict(self.evidence))
 
 
 @dataclass(frozen=True, slots=True)
@@ -702,7 +722,215 @@ class EvaluationOutcome:
     duration_ms: float
     critical: bool
     error: str = ""
+    evidence: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
+
+
+_REMOTE_CONTEXT_SECTIONS = frozenset(
+    {
+        "goal",
+        "task_context",
+        "dependency_artifacts",
+        "review_feedback",
+        "knowledge",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteAgentRegistration:
+    agent_id: str
+    card_url: str
+    card_sha256: str
+    interface_url: str
+    skill_by_task_type: dict[str, str]
+    auth_env: str = ""
+    allowed_context_sections: tuple[str, ...] = ("review_feedback",)
+    allow_insecure_localhost: bool = False
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        agent_id: str,
+        card_url: str,
+        card_sha256: str,
+        interface_url: str,
+        skill_by_task_type: dict[str, str],
+        *,
+        auth_env: str = "",
+        allowed_context_sections: Sequence[str] = ("review_feedback",),
+        allow_insecure_localhost: bool = False,
+    ) -> RemoteAgentRegistration:
+        if not agent_id.strip() or not card_url.strip() or not interface_url.strip():
+            raise ValueError("remote agent identity and URLs must not be empty")
+        digest = card_sha256.casefold()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("card SHA-256 must be 64 hexadecimal characters")
+        normalized_skills = {
+            str(task_type).strip(): str(skill_id).strip()
+            for task_type, skill_id in skill_by_task_type.items()
+        }
+        if not normalized_skills or any(
+            not task_type or not skill_id
+            for task_type, skill_id in normalized_skills.items()
+        ):
+            raise ValueError("remote agent skill mapping must not be empty")
+        if auth_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", auth_env):
+            raise ValueError("authentication environment variable name is invalid")
+        sections = tuple(sorted({str(item).strip() for item in allowed_context_sections}))
+        if any(item not in _REMOTE_CONTEXT_SECTIONS for item in sections):
+            raise ValueError("remote context section is not allowed")
+        return cls(
+            agent_id=agent_id.strip(),
+            card_url=card_url.strip(),
+            card_sha256=digest,
+            interface_url=interface_url.strip().rstrip("/"),
+            skill_by_task_type=normalized_skills,
+            auth_env=auth_env,
+            allowed_context_sections=sections,
+            allow_insecure_localhost=bool(allow_insecure_localhost),
+        )
+
+    @property
+    def model_id(self) -> str:
+        return f"a2a:{self.card_sha256}"
+
+    @property
+    def task_types(self) -> tuple[str, ...]:
+        return tuple(sorted(self.skill_by_task_type))
+
+
+_DELEGATION_TRANSITIONS: dict[DelegationStatus, frozenset[DelegationStatus]] = {
+    DelegationStatus.PREPARED: frozenset({DelegationStatus.SUBMITTING}),
+    DelegationStatus.SUBMITTING: frozenset(
+        {
+            DelegationStatus.ACCEPTED,
+            DelegationStatus.COMPLETED,
+            DelegationStatus.FAILED,
+            DelegationStatus.REJECTED,
+            DelegationStatus.INTERRUPTED,
+            DelegationStatus.UNKNOWN,
+        }
+    ),
+    DelegationStatus.ACCEPTED: frozenset(
+        {
+            DelegationStatus.ACCEPTED,
+            DelegationStatus.COMPLETED,
+            DelegationStatus.FAILED,
+            DelegationStatus.CANCELED,
+            DelegationStatus.REJECTED,
+            DelegationStatus.INTERRUPTED,
+        }
+    ),
+    DelegationStatus.INTERRUPTED: frozenset({DelegationStatus.CANCELED}),
+    DelegationStatus.COMPLETED: frozenset(),
+    DelegationStatus.FAILED: frozenset(),
+    DelegationStatus.CANCELED: frozenset(),
+    DelegationStatus.REJECTED: frozenset(),
+    DelegationStatus.UNKNOWN: frozenset(),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DelegationRecord:
+    delegation_id: str
+    goal_id: str
+    task_id: str
+    attempt_no: int
+    agent_id: str
+    model_id: str
+    card_sha256: str
+    message_id: str
+    payload_sha256: str
+    status: DelegationStatus = DelegationStatus.PREPARED
+    remote_task_id: str = ""
+    remote_task_state: str = ""
+    poll_count: int = 0
+    result_content: str = ""
+    result_sha256: str = ""
+    error_category: str = ""
+    canceled_by: str = ""
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        attempt_no: int,
+        registration: RemoteAgentRegistration,
+        message_id: str,
+        payload_sha256: str,
+    ) -> DelegationRecord:
+        values = (goal_id, task_id, message_id, payload_sha256)
+        if any(not value.strip() for value in values):
+            raise ValueError("delegation identity fields must not be empty")
+        if attempt_no < 1:
+            raise ValueError("delegation attempt number must be positive")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", payload_sha256):
+            raise ValueError("delegation payload SHA-256 is invalid")
+        return cls(
+            delegation_id=f"delegation-{uuid4().hex[:16]}",
+            goal_id=goal_id.strip(),
+            task_id=task_id.strip(),
+            attempt_no=attempt_no,
+            agent_id=registration.agent_id,
+            model_id=registration.model_id,
+            card_sha256=registration.card_sha256,
+            message_id=message_id.strip(),
+            payload_sha256=payload_sha256.casefold(),
+        )
+
+    def advance(
+        self,
+        status: DelegationStatus,
+        *,
+        remote_task_id: str = "",
+        remote_task_state: str = "",
+        increment_poll: bool = False,
+        result_content: str = "",
+        error_category: str = "",
+        canceled_by: str = "",
+    ) -> DelegationRecord:
+        if not _DELEGATION_TRANSITIONS[self.status]:
+            raise ValueError(f"delegation is terminal in state {self.status.value}")
+        if status not in _DELEGATION_TRANSITIONS[self.status]:
+            raise ValueError(
+                f"invalid delegation transition: {self.status.value} -> {status.value}"
+            )
+        next_task_id = remote_task_id.strip() or self.remote_task_id
+        if self.remote_task_id and remote_task_id and remote_task_id != self.remote_task_id:
+            raise ValueError("remote task identity cannot change")
+        if status == DelegationStatus.ACCEPTED and not next_task_id:
+            raise ValueError("accepted delegation requires a remote task ID")
+        if status == DelegationStatus.COMPLETED and not result_content.strip():
+            raise ValueError("completed delegation requires result content")
+        if status == DelegationStatus.UNKNOWN and not error_category.strip():
+            raise ValueError("unknown delegation requires an error category")
+        if error_category and not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", error_category):
+            raise ValueError("delegation error category must be a safe short value")
+        if increment_poll and status != DelegationStatus.ACCEPTED:
+            raise ValueError("only accepted delegation polling increments the count")
+        normalized_result = result_content if status == DelegationStatus.COMPLETED else ""
+        result_digest = (
+            hashlib.sha256(normalized_result.encode("utf-8")).hexdigest()
+            if normalized_result
+            else ""
+        )
+        return replace(
+            self,
+            status=status,
+            remote_task_id=next_task_id,
+            remote_task_state=remote_task_state.strip() or self.remote_task_state,
+            poll_count=self.poll_count + int(increment_poll),
+            result_content=normalized_result or self.result_content,
+            result_sha256=result_digest or self.result_sha256,
+            error_category=error_category.strip() or self.error_category,
+            canceled_by=canceled_by.strip() or self.canceled_by,
+            updated_at=utc_now(),
+        )
 
 
 @dataclass(frozen=True, slots=True)
