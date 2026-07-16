@@ -153,6 +153,15 @@ class LoopEngineTests(unittest.TestCase):
         self.assertIn("duplicate", report.reason)
         self.assertEqual(self.worker.calls, [])
 
+    def test_create_goal_rejects_duplicate_identifier_without_overwrite(self):
+        engine = self.engine(SingleTaskPlanner())
+        engine.create_goal("Original", "Keep this goal", goal_id="same-goal")
+
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            engine.create_goal("Replacement", "Must not overwrite", goal_id="same-goal")
+
+        self.assertEqual(self.repository.get_goal("same-goal").title, "Original")
+
     def test_attempt_exhaustion_fails_goal(self):
         engine = self.engine(SingleTaskPlanner(max_attempts=2), AlwaysFailReviewer())
         goal = engine.create_goal("Fail", "Exercise retry limit", goal_id="g3")

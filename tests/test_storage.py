@@ -56,6 +56,19 @@ class SQLiteRepositoryTests(unittest.TestCase):
         self.assertIsNone(repository.get_goal("missing"))
         repository.close()
 
+    def test_same_task_id_is_isolated_between_goals(self):
+        repository = SQLiteRepository(":memory:")
+        first = Goal.create("First", "First goal", goal_id="first")
+        second = Goal.create("Second", "Second goal", goal_id="second")
+        repository.save_goal(first)
+        repository.save_goal(second)
+        repository.save_task(Task.create("first", "research", "analysis", "First research"))
+        repository.save_task(Task.create("second", "research", "analysis", "Second research"))
+
+        self.assertEqual(repository.list_tasks("first")[0].description, "First research")
+        self.assertEqual(repository.list_tasks("second")[0].description, "Second research")
+        repository.close()
+
     def test_attempt_review_performance_and_event_commit_atomically(self):
         repository = SQLiteRepository(":memory:")
         goal = Goal.create("Atomic", "Record one outcome", goal_id="atomic")

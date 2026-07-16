@@ -52,6 +52,8 @@ class LoopEngine:
         self, title: str, description: str, *, goal_id: str | None = None
     ) -> Goal:
         goal = Goal.create(title, description, goal_id)
+        if self.repository.get_goal(goal.goal_id) is not None:
+            raise ValueError(f"goal already exists: {goal.goal_id}")
         self.repository.save_goal(goal)
         self._event(goal.goal_id, "goal.created", {"title": goal.title})
         return goal

@@ -58,10 +58,11 @@ class SQLiteRepository:
                 payload TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS tasks (
-                task_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
                 goal_id TEXT NOT NULL,
                 position INTEGER NOT NULL,
                 payload TEXT NOT NULL,
+                PRIMARY KEY(goal_id, task_id),
                 FOREIGN KEY(goal_id) REFERENCES goals(goal_id)
             );
             CREATE TABLE IF NOT EXISTS artifacts (
@@ -135,7 +136,7 @@ class SQLiteRepository:
             for task in tasks:
                 self.connection.execute(
                     "INSERT INTO tasks(task_id, goal_id, position, payload) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(task_id) DO UPDATE SET goal_id=excluded.goal_id, "
+                    "ON CONFLICT(goal_id, task_id) DO UPDATE SET "
                     "position=excluded.position, payload=excluded.payload",
                     (task.task_id, task.goal_id, task.position, _dump(asdict(task))),
                 )
