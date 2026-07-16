@@ -118,6 +118,37 @@ class Defect:
 
 
 @dataclass(frozen=True, slots=True)
+class Artifact:
+    artifact_id: str
+    goal_id: str
+    task_id: str
+    agent_id: str
+    content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        goal_id: str,
+        task_id: str,
+        agent_id: str,
+        content: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Artifact:
+        if not content.strip():
+            raise ValueError("artifact content must not be empty")
+        return cls(
+            f"artifact-{uuid4().hex[:12]}",
+            goal_id,
+            task_id,
+            agent_id,
+            content,
+            dict(metadata or {}),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class Review:
     review_id: str
     goal_id: str
@@ -153,6 +184,68 @@ class Review:
             score=float(score),
             defects=tuple(defects),
             summary=summary,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Event:
+    event_id: str
+    goal_id: str
+    event_type: str
+    payload: dict[str, Any]
+    created_at: str = field(default_factory=utc_now)
+    sequence: int = 0
+
+    @classmethod
+    def create(cls, goal_id: str, event_type: str, payload: dict[str, Any]) -> Event:
+        if not event_type.strip():
+            raise ValueError("event_type must not be empty")
+        return cls(f"event-{uuid4().hex[:12]}", goal_id, event_type, dict(payload))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProfile:
+    agent_id: str
+    role: str
+    model_id: str
+    task_types: tuple[str, ...] = ("*",)
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class PerformanceRecord:
+    agent_id: str
+    task_type: str
+    attempts: int = 0
+    passes: int = 0
+    avg_score: float = 0.0
+    avg_duration_ms: float = 0.0
+    recent_results: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def success_rate(self) -> float:
+        return self.passes / self.attempts if self.attempts else 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeItem:
+    knowledge_id: str
+    title: str
+    content: str
+    tags: tuple[str, ...]
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls, title: str, content: str, tags: Sequence[str] = ()
+    ) -> KnowledgeItem:
+        if not title.strip() or not content.strip():
+            raise ValueError("knowledge title and content must not be empty")
+        return cls(
+            f"knowledge-{uuid4().hex[:12]}",
+            title.strip(),
+            content.strip(),
+            tuple(tag.strip() for tag in tags if tag.strip()),
         )
 
 
