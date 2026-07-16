@@ -7,6 +7,31 @@ from typing import Any, Protocol, Sequence
 from .domain import Goal, Review, Task
 
 
+class WorkerBlocked(RuntimeError):
+    """A worker cannot be retried automatically without losing safety evidence."""
+
+    _EVIDENCE_KEYS = {
+        "delegation_id",
+        "card_sha256",
+        "remote_task_id",
+        "status",
+        "error_category",
+    }
+
+    def __init__(self, reason: str, evidence: dict[str, Any] | None = None):
+        normalized_reason = " ".join(reason.split()).strip()[:256]
+        if not normalized_reason:
+            raise ValueError("blocked worker reason must not be empty")
+        self.reason = normalized_reason
+        self.evidence = {
+            key: value[:256] if isinstance(value, str) else value
+            for key, value in dict(evidence or {}).items()
+            if key in self._EVIDENCE_KEYS
+            and isinstance(value, (str, int, float, bool))
+        }
+        super().__init__(self.reason)
+
+
 class Planner(Protocol):
     def plan(self, goal: Goal, context: dict[str, Any]) -> Sequence[Task]: ...
 

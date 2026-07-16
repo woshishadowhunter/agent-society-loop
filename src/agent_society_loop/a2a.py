@@ -21,6 +21,7 @@ from .domain import (
     RemoteAgentRegistration,
     Task,
 )
+from .ports import WorkerBlocked
 
 
 class A2AError(RuntimeError):
@@ -736,3 +737,35 @@ class A2ARemoteExecutor:
                 **attributes,
             },
         )
+
+
+class A2ARemoteWorker:
+    def __init__(self, executor: A2ARemoteExecutor) -> None:
+        self.executor = executor
+        self.agent_id = executor.registration.agent_id
+
+    def execute(self, task: Task, context: dict[str, Any]) -> str:
+        attempt_no = len(
+            self.executor.repository.list_reviews(task.goal_id, task.task_id)
+        ) + 1
+        try:
+            return self.executor.delegate(
+                task, context, attempt_no=attempt_no
+            ).content
+        except (A2AAmbiguousSubmission, A2AProtocolError):
+            delegation = self.executor.repository.get_attempt_delegation(
+                task.goal_id, task.task_id, attempt_no, self.agent_id
+            )
+            evidence = {"card_sha256": self.executor.registration.card_sha256}
+            if delegation is not None:
+                evidence.update(
+                    {
+                        "delegation_id": delegation.delegation_id,
+                        "remote_task_id": delegation.remote_task_id,
+                        "status": delegation.status.value,
+                        "error_category": delegation.error_category,
+                    }
+                )
+            raise WorkerBlocked(
+                "remote delegation requires operator review", evidence
+            ) from None

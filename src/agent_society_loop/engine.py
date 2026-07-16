@@ -25,7 +25,7 @@ from .domain import (
     validate_task_graph,
 )
 from .memory import MemoryManager
-from .ports import Planner, Reviewer, Worker
+from .ports import Planner, Reviewer, Worker, WorkerBlocked
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
 from .tools import ApprovalRequired
@@ -211,6 +211,12 @@ class LoopEngine:
                             f"{task.task_type}"
                         )
                     candidates = eligible
+                else:
+                    candidates = [
+                        agent
+                        for agent in candidates
+                        if agent.execution_kind == "local"
+                    ]
                 decision = self.selector.select(
                     task,
                     candidates,
@@ -244,6 +250,7 @@ class LoopEngine:
             )
             started = perf_counter()
             artifact: Artifact | None = None
+            blocked_error: WorkerBlocked | None = None
             try:
                 context = self.memory.build_context(goal, task)
                 content = worker.execute(task, context)
@@ -267,6 +274,23 @@ class LoopEngine:
                     },
                 )
                 return self._report(goal)
+            except WorkerBlocked as error:
+                blocked_error = error
+                review = Review.create(
+                    goal.goal_id,
+                    task.task_id,
+                    attempt_no,
+                    Verdict.FAIL,
+                    0,
+                    [
+                        Defect(
+                            "execution",
+                            error.reason,
+                            "operator review is required before resuming",
+                        )
+                    ],
+                    error.reason,
+                )
             except Exception as error:
                 review = Review.create(
                     goal.goal_id,
@@ -305,12 +329,31 @@ class LoopEngine:
                     "agent_id": decision.agent_id,
                     "passed": passed,
                     "score": review.score,
+                    **(blocked_error.evidence if blocked_error is not None else {}),
                 },
             )
             self.repository.save_attempt_outcome(
                 attempt, review, performance, completion_event
             )
             actions += 1
+
+            if blocked_error is not None:
+                task = replace(task, status=TaskStatus.BLOCKED)
+                self.repository.save_task(task)
+                reason = blocked_error.reason
+                goal = transition_goal(goal, GoalStatus.BLOCKED, reason)
+                self.repository.save_goal(goal)
+                self._event(
+                    goal.goal_id,
+                    "goal.blocked",
+                    {
+                        "reason": reason,
+                        "task_id": task.task_id,
+                        "agent_id": decision.agent_id,
+                        **blocked_error.evidence,
+                    },
+                )
+                return self._report(goal)
 
             if passed:
                 task = replace(
