@@ -228,6 +228,14 @@ class PerformanceRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class SelectionDecision:
+    agent_id: str
+    total_score: float
+    components: dict[str, float]
+    considered: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeItem:
     knowledge_id: str
     title: str
