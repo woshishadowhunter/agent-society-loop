@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible defect in the runtime or documentation.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include the smallest goal spec or command sequence that reproduces the issue.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version and operating system
+    validations:
+      required: true
+  - type: checkboxes
+    id: secrets
+    attributes:
+      label: Data safety
+      options:
+        - label: I removed credentials and private data from this report.
+          required: true
+
