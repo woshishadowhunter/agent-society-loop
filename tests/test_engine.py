@@ -192,6 +192,10 @@ class LoopEngineTests(unittest.TestCase):
         self.assertEqual(paused.attempts, 0)
         self.assertEqual(paused.actions, 0)
         self.assertEqual(tool.calls, 0)
+        span_names = {span.name for span in self.repository.list_spans(goal.goal_id)}
+        self.assertIn("goal.created", span_names)
+        self.assertIn("goal.planning", span_names)
+        self.assertIn("approval.requested", span_names)
         approval = self.repository.list_approvals(goal.goal_id)[0]
 
         still_paused = engine.resume(goal.goal_id)
@@ -208,6 +212,9 @@ class LoopEngineTests(unittest.TestCase):
         self.assertEqual(completed.attempts, 1)
         self.assertEqual(completed.actions, 1)
         self.assertEqual(tool.calls, 1)
+        span_names = {span.name for span in self.repository.list_spans(goal.goal_id)}
+        self.assertIn("approval.approved", span_names)
+        self.assertIn("goal.succeeded", span_names)
 
     def test_rejected_tool_approval_fails_without_attempt(self):
         engine, tool = self.approval_engine()

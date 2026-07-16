@@ -151,6 +151,10 @@ def _candidate_files(root: Path) -> Iterator[Path]:
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         if any(part in _IGNORED_DIRECTORIES for part in path.relative_to(root).parts):
             continue
+        if path.is_symlink() or (
+            hasattr(path, "is_junction") and path.is_junction()
+        ):
+            continue
         if path.is_file():
             yield path
 

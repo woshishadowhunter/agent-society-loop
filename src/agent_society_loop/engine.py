@@ -29,6 +29,7 @@ from .ports import Planner, Reviewer, Worker
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
 from .tools import ApprovalRequired
+from .tracing import TraceRecorder
 
 
 class LoopEngine:
@@ -42,6 +43,7 @@ class LoopEngine:
         memory: MemoryManager,
         selector: PerformanceWeightedSelector,
         budget: RunBudget | None = None,
+        tracer: TraceRecorder | None = None,
     ):
         self.planner = planner
         self.workers = dict(workers)
@@ -50,6 +52,7 @@ class LoopEngine:
         self.memory = memory
         self.selector = selector
         self.budget = budget or RunBudget()
+        self.tracer = tracer or TraceRecorder(repository)
 
     def create_goal(
         self, title: str, description: str, *, goal_id: str | None = None
@@ -352,6 +355,16 @@ class LoopEngine:
 
     def _event(self, goal_id: str, event_type: str, payload: dict[str, object]) -> None:
         self.repository.append_event(Event.create(goal_id, event_type, payload))
+        kind = "approval" if event_type.startswith("approval.") else "lifecycle"
+        with self.tracer.span(
+            goal_id,
+            event_type,
+            kind=kind,
+            task_id=str(payload["task_id"]) if "task_id" in payload else None,
+            agent_id=str(payload["agent_id"]) if "agent_id" in payload else None,
+            attributes=dict(payload),
+        ):
+            pass
 
 
 def resolve_approval(
@@ -371,24 +384,39 @@ def resolve_approval(
         raise ValueError(f"goal is not paused: {goal.goal_id}")
     status = ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
     resolved = approval.resolve(status, decided_by)
-    repository.save_approval(resolved)
-    repository.append_event(
+    event_payload = {
+        "approval_id": resolved.approval_id,
+        "task_id": resolved.task_id,
+        "tool_name": resolved.tool_name,
+        "decided_by": resolved.decided_by,
+    }
+    events = [
         Event.create(
             goal.goal_id,
             f"approval.{status.value}",
-            {
-                "approval_id": resolved.approval_id,
-                "task_id": resolved.task_id,
-                "tool_name": resolved.tool_name,
-                "decided_by": resolved.decided_by,
-            },
+            event_payload,
         )
-    )
+    ]
+    failed = None
     if status == ApprovalStatus.REJECTED:
         reason = f"approval rejected for tool {resolved.tool_name}"
         failed = transition_goal(goal, GoalStatus.FAILED, reason)
-        repository.save_goal(failed)
-        repository.append_event(
-            Event.create(failed.goal_id, "goal.failed", {"reason": reason})
-        )
+        events.append(Event.create(failed.goal_id, "goal.failed", {"reason": reason}))
+    repository.save_approval_resolution(resolved, events, failed)
+    with TraceRecorder(repository).span(
+        goal.goal_id,
+        f"approval.{status.value}",
+        kind="approval",
+        task_id=resolved.task_id,
+        attributes=event_payload,
+    ):
+        pass
+    if failed is not None:
+        with TraceRecorder(repository).span(
+            failed.goal_id,
+            "goal.failed",
+            kind="lifecycle",
+            attributes={"reason": failed.failure_reason},
+        ):
+            pass
     return resolved

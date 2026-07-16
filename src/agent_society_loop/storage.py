@@ -383,6 +383,31 @@ class SQLiteRepository:
         )
         self.connection.commit()
 
+    def save_approval_resolution(
+        self,
+        approval: ApprovalRequest,
+        events: Iterable[Event],
+        goal: Goal | None = None,
+    ) -> None:
+        """Commit an approval decision, lifecycle state, and audit events atomically."""
+        with self.connection:
+            cursor = self.connection.execute(
+                "UPDATE approvals SET payload=? WHERE approval_id=?",
+                (_dump(asdict(approval)), approval.approval_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"approval not found: {approval.approval_id}")
+            if goal is not None:
+                self.connection.execute(
+                    "UPDATE goals SET payload=? WHERE goal_id=?",
+                    (_dump(asdict(goal)), goal.goal_id),
+                )
+            for event in events:
+                self.connection.execute(
+                    "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                    (event.event_id, event.goal_id, _dump(asdict(event))),
+                )
+
     def get_approval(self, approval_id: str) -> ApprovalRequest | None:
         row = self.connection.execute(
             "SELECT payload FROM approvals WHERE approval_id=?", (approval_id,)

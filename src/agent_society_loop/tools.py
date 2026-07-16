@@ -53,6 +53,8 @@ class ToolRegistry:
                 raise ValueError(f"duplicate tool: {tool.name}")
             if not tool.name.strip() or not tool.description.strip():
                 raise ValueError("tool name and description must not be empty")
+            if not isinstance(tool.risk, ToolRisk):
+                raise ValueError(f"tool risk must be a ToolRisk: {tool.name}")
             self._tools[tool.name] = tool
 
     def get(self, name: str) -> Tool:

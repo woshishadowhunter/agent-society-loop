@@ -5,7 +5,7 @@ All notable changes are documented here.
 ## 0.2.0 - 2026-07-16
 
 - Added strict JSON model-backed planner, worker, and reviewer adapters.
-- Added bounded tool loops with deterministic JSON Schema validation.
+- Added bounded tool loops with deterministic top-level schema validation.
 - Added read, write, and execute risk classes with durable human approval.
 - Added non-terminal paused goals that resume without consuming failed attempts.
 - Added linked, timed, secret-redacted trace spans for model and tool activity.

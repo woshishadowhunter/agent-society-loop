@@ -71,6 +71,7 @@ def build_maintenance_engine(
         memory=memory,
         selector=PerformanceWeightedSelector(),
         budget=RunBudget(max_actions=max_actions),
+        tracer=tracer,
     )
 
 

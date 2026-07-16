@@ -34,6 +34,22 @@ class WorkspaceToolTests(unittest.TestCase):
         self.assertEqual(tool.risk, ToolRisk.READ)
         self.assertEqual(result, ["README.md", "src/app.py"])
 
+    def test_list_files_does_not_read_symlink_targets_outside_workspace(self):
+        outside = self.root.parent / f"{self.root.name}-outside-secret.txt"
+        outside.write_text("outside secret", encoding="utf-8")
+        link = self.root / "linked-secret.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError as error:
+            outside.unlink(missing_ok=True)
+            self.skipTest(f"symbolic links unavailable: {error}")
+        try:
+            result = WorkspaceListFilesTool(self.root).invoke({})
+        finally:
+            outside.unlink(missing_ok=True)
+
+        self.assertNotIn("linked-secret.txt", result)
+
     def test_read_file_rejects_path_escape_and_size_overflow(self):
         tool = WorkspaceReadFileTool(self.root, max_bytes=10)
 

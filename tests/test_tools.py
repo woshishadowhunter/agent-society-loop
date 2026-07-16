@@ -150,6 +150,13 @@ class ToolRuntimeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate tool"):
             ToolRegistry([EchoTool(), EchoTool()])
 
+    def test_unknown_risk_classification_is_rejected(self):
+        tool = EchoTool()
+        tool.risk = "custom"
+
+        with self.assertRaisesRegex(ValueError, "risk"):
+            ToolRegistry([tool])
+
     def test_tool_exception_is_returned_without_private_detail(self):
         result = self.executor(EchoTool(fail=True)).execute(
             "echo", {"text": "hello"}, self.context
