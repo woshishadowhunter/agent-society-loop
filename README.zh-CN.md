@@ -139,6 +139,26 @@ agent-society deployments --db evolution.db --json
 
 外部工具可以通过稳定版 MCP `2025-11-25` stdio 服务接入。发现工具不等于获得权限：只有操作者提供本地风险分类的工具才会注册，适配后的调用仍经过参数校验、审批、Trace 和动作预算。详见 [MCP 工具接入](docs/mcp.md)。
 
+## 委派给受治理的 A2A 专家
+
+v0.6 支持 A2A `1.0` 的 `HTTP+JSON` 轮询子集。系统不会因为发现一个远端 Agent 就自动信任它：操作者必须检查 Agent Card，固定原始 SHA-256、精确接口和技能映射，再对这个不可变身份执行 benchmark 并显式晋级。
+
+```bash
+agent-society a2a inspect-card https://agent.example/.well-known/agent-card.json --json
+export ACME_A2A_TOKEN="..."
+agent-society a2a register research-agent \
+  https://agent.example/.well-known/agent-card.json \
+  --sha256 CARD_SHA256 --interface https://agent.example/a2a \
+  --skill research=deep-research --auth-env ACME_A2A_TOKEN --json
+
+# 先评测并晋级精确的 a2a:CARD_SHA256 身份。
+agent-society run examples/a2a-goal-spec.json --db society.db --allow-remote --json
+agent-society a2a delegations --db society.db --json
+agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
+```
+
+仅注册不会获得生产流量；没有精确 active deployment 时，A2A 档案不参与选人；已有远端部署但未提供 `--allow-remote` 时，目标会阻塞而不是回退。Bearer 值只从已登记的环境变量名读取。明文 HTTP 仅允许显式开启的本机回环开发地址。完整的评测、晋级、超时、模糊提交和取消流程见 [A2A 安全委派](docs/a2a.md)。
+
 ## 常用命令
 
 | 命令 | 用途 |
@@ -152,6 +172,11 @@ agent-society deployments --db evolution.db --json
 | `agent-society evaluations [RUN_ID]` | 查看评测结论和逐案例结果 |
 | `agent-society promote RUN_ID --by NAME` | 显式晋级通过门禁的挑战者 |
 | `agent-society deployments` | 查看各任务类型当前冠军 |
+| `agent-society a2a inspect-card URL` | 检查 Agent Card 并计算摘要 |
+| `agent-society a2a register ...` | 固定卡片、接口和技能映射 |
+| `agent-society a2a agents` | 查看远端信任记录 |
+| `agent-society a2a delegations [ID]` | 查看持久委派状态 |
+| `agent-society a2a cancel ID --by NAME` | 取消已知远端任务 |
 | `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
 | `agent-society maintain ... --apply --check NAME=COMMAND` | 应用获批的本地修改并运行获批的命名检查 |
 | `agent-society maintain ... --publish` | 将已验证的合规分支发布为获批 Pull Request |
@@ -190,7 +215,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.5 仍在单进程中顺序执行任务；长期知识采用标签和词项匹配，不是向量数据库。MCP 仅支持稳定版 stdio 工具发现与调用，不包含 HTTP transport、resources、sampling、elicitation 或实验性 tasks。系统不能删除或重命名文件、安装依赖、合并、强制推送或修改分支保护。分布式 worker、A2A 委派、并发调度、在线学习和 Web 控制台仍属于后续工作。
+v0.6 的调度器仍在单进程中顺序执行；长期知识采用标签和词项匹配，不是向量数据库。MCP 仍仅支持稳定版 stdio 工具发现与调用。A2A 仅支持出站 `HTTP+JSON` 轮询，不包含入站服务、流式、Webhook、多轮输入或认证补充、文件/媒体、自动发现、JWS 验签、凭据获取、自动重发、自动回退或自动晋级。系统不能删除或重命名文件、安装依赖、合并、强制推送或修改分支保护。并发调度、在线学习和 Web 控制台仍属于后续工作。
 
 ## 开发与验证
 

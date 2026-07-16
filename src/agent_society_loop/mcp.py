@@ -93,7 +93,7 @@ class MCPStdioClient:
             {
                 "protocolVersion": self.protocol_versions[0],
                 "capabilities": {},
-                "clientInfo": {"name": "agent-society-loop", "version": "0.5.0"},
+                "clientInfo": {"name": "agent-society-loop", "version": "0.6.0"},
             },
         )
         if not isinstance(result, dict):

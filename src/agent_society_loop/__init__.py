@@ -1,5 +1,20 @@
 """Agent Society Loop public package."""
 
+from .a2a import (
+    A2AAmbiguousSubmission,
+    A2ABenchmarkRunner,
+    A2AHTTPClient,
+    A2AHTTPError,
+    A2ALimits,
+    A2AProtocolError,
+    A2ARemoteExecutor,
+    A2ARemoteWorker,
+    AgentCardInspection,
+    RemoteExecution,
+    inspect_agent_card,
+    register_remote_agent,
+)
+
 from .domain import (
     ApprovalRequest,
     ApprovalStatus,
@@ -56,6 +71,18 @@ __all__ = [
     "VerificationResult",
     "Verdict",
     "WorkspaceSnapshot",
+    "A2AAmbiguousSubmission",
+    "A2ABenchmarkRunner",
+    "A2AHTTPClient",
+    "A2AHTTPError",
+    "A2ALimits",
+    "A2AProtocolError",
+    "A2ARemoteExecutor",
+    "A2ARemoteWorker",
+    "AgentCardInspection",
+    "RemoteExecution",
+    "inspect_agent_card",
+    "register_remote_agent",
 ]
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

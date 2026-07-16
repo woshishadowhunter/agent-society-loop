@@ -2,6 +2,15 @@
 
 All notable changes are documented here.
 
+## 0.6.0 - 2026-07-16
+
+- Added strict outbound A2A `1.0` `HTTP+JSON` Agent Card inspection, digest pinning, and immutable remote registrations.
+- Added bounded `SendMessage`, `GetTask`, and `CancelTask` transport with HTTPS-by-default, no redirects, allowlisted context, and secret-safe errors.
+- Added durable delegation lifecycle, resumable polling, operator cancellation, normalized text/data results, and fail-closed remote identity checks.
+- Added the no-resend ambiguity rule: uncertain submissions become terminal `unknown` and block for operator review.
+- Added deployment-gated remote routing, explicit `run --allow-remote`, and mandatory local review of remote output.
+- Added delegation/card evidence to benchmark outcomes plus A2A CLI inspection, registration, listing, and cancellation workflows.
+
 ## 0.5.0 - 2026-07-16
 
 - Added a bounded MCP `2025-11-25` stdio client with initialization, paginated tool discovery, and tool calls.

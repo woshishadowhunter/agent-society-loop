@@ -193,7 +193,10 @@ class A2AHTTPClient:
                     raise
                 return data, response.headers
         except urllib.error.HTTPError as error:
-            error.close()
+            try:
+                error.read(self.limits.max_response_bytes + 1)
+            finally:
+                error.close()
             if 300 <= error.code < 400:
                 raise A2AHTTPError("A2A redirect rejected") from None
             if ambiguous and error.code >= 500:
