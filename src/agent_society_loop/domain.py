@@ -744,6 +744,7 @@ class RemoteAgentRegistration:
     card_sha256: str
     interface_url: str
     skill_by_task_type: dict[str, str]
+    tenant: str = ""
     auth_env: str = ""
     allowed_context_sections: tuple[str, ...] = ("review_feedback",)
     allow_insecure_localhost: bool = False
@@ -758,6 +759,7 @@ class RemoteAgentRegistration:
         interface_url: str,
         skill_by_task_type: dict[str, str],
         *,
+        tenant: str = "",
         auth_env: str = "",
         allowed_context_sections: Sequence[str] = ("review_feedback",),
         allow_insecure_localhost: bool = False,
@@ -787,6 +789,7 @@ class RemoteAgentRegistration:
             card_sha256=digest,
             interface_url=interface_url.strip().rstrip("/"),
             skill_by_task_type=normalized_skills,
+            tenant=tenant.strip(),
             auth_env=auth_env,
             allowed_context_sections=sections,
             allow_insecure_localhost=bool(allow_insecure_localhost),

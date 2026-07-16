@@ -779,6 +779,43 @@ class SQLiteRepository:
         )
         self.connection.commit()
 
+    def save_remote_agent_profile(
+        self,
+        registration: RemoteAgentRegistration,
+        profile: AgentProfile,
+    ) -> None:
+        if (
+            registration.agent_id != profile.agent_id
+            or registration.model_id != profile.model_id
+            or profile.execution_kind != "a2a"
+        ):
+            raise ValueError("remote registration and agent profile do not match")
+        existing_registration = self.get_remote_agent(registration.agent_id)
+        if existing_registration is not None and existing_registration != registration:
+            raise ValueError("remote agent identity cannot change")
+        existing_profile = self.get_agent(profile.agent_id)
+        if existing_profile is not None and existing_profile != profile:
+            raise ValueError("remote agent profile cannot change")
+        try:
+            with self.connection:
+                self.connection.execute(
+                    "INSERT INTO remote_agents(agent_id, card_sha256, payload) "
+                    "VALUES (?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET "
+                    "payload=excluded.payload",
+                    (
+                        registration.agent_id,
+                        registration.card_sha256,
+                        _dump(asdict(registration)),
+                    ),
+                )
+                self.connection.execute(
+                    "INSERT INTO agents(agent_id, payload) VALUES (?, ?) "
+                    "ON CONFLICT(agent_id) DO UPDATE SET payload=excluded.payload",
+                    (profile.agent_id, _dump(asdict(profile))),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError("remote agent card identity is already registered") from error
+
     def get_remote_agent(self, agent_id: str) -> RemoteAgentRegistration | None:
         row = self.connection.execute(
             "SELECT payload FROM remote_agents WHERE agent_id=?", (agent_id,)
@@ -865,6 +902,7 @@ def _evaluation_run_from_payload(payload: str) -> EvaluationRun:
 
 def _remote_agent_from_payload(payload: str) -> RemoteAgentRegistration:
     data = _load(payload)
+    data.setdefault("tenant", "")
     data["allowed_context_sections"] = tuple(data["allowed_context_sections"])
     return RemoteAgentRegistration(**data)
 
