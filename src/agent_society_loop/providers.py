@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Sequence
+from typing import Any, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -16,6 +16,7 @@ class OpenAICompatibleProvider:
         model: str,
         *,
         timeout: float = 30.0,
+        response_format: dict[str, Any] | None = None,
     ):
         if not api_key.strip() or not base_url.strip() or not model.strip():
             raise ValueError("api_key, base_url, and model are required")
@@ -25,6 +26,7 @@ class OpenAICompatibleProvider:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
+        self.response_format = dict(response_format) if response_format else None
 
     def complete(
         self,
@@ -32,13 +34,14 @@ class OpenAICompatibleProvider:
         *,
         temperature: float = 0.0,
     ) -> str:
-        payload = json.dumps(
-            {
-                "model": self.model,
-                "messages": list(messages),
-                "temperature": temperature,
-            }
-        ).encode("utf-8")
+        request_data: dict[str, Any] = {
+            "model": self.model,
+            "messages": list(messages),
+            "temperature": temperature,
+        }
+        if self.response_format is not None:
+            request_data["response_format"] = self.response_format
+        payload = json.dumps(request_data).encode("utf-8")
         request = Request(
             f"{self.base_url}/chat/completions",
             data=payload,

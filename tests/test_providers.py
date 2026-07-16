@@ -56,6 +56,22 @@ class OpenAICompatibleProviderTests(unittest.TestCase):
         self.assertEqual(ProviderHandler.received["authorization"], "Bearer secret-token")
         self.assertEqual(ProviderHandler.received["body"]["model"], "model-a")
         self.assertEqual(ProviderHandler.received["body"]["temperature"], 0.2)
+        self.assertNotIn("response_format", ProviderHandler.received["body"])
+
+    def test_sends_optional_structured_output_format(self):
+        provider = OpenAICompatibleProvider(
+            "secret-token",
+            self.url,
+            "model-a",
+            response_format={"type": "json_object"},
+        )
+
+        provider.complete([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(
+            ProviderHandler.received["body"]["response_format"],
+            {"type": "json_object"},
+        )
 
     def test_malformed_response_raises_clear_error_without_secret(self):
         ProviderHandler.response_body = {"choices": []}
