@@ -19,6 +19,7 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `model_agents.py` | Strict JSON planner, worker, and reviewer adapters |
 | `tools.py` | Tool discovery, schema validation, policy, and approval enforcement |
 | `mcp.py` | Bounded MCP stdio transport, tool discovery, and local risk adaptation |
+| `a2a.py` | Pinned Agent Cards, bounded A2A HTTP, durable delegation, and remote workers |
 | `evaluation.py` | Immutable benchmark evaluation and champion/challenger gates |
 | `tracing.py` | Linked, timed, redacted execution spans |
 | `github.py` | Bounded read-only GitHub issue retrieval |
@@ -67,9 +68,13 @@ Terminal goals are immutable. An interrupted process normally leaves the goal `r
 
 Worker exceptions become score-zero failed reviews. They therefore use the same bounded retry path and remain visible in the audit history.
 
+`WorkerBlocked` is the exception for evidence that cannot be retried safely, such as an ambiguous A2A submission. It records a score-zero attempt and delegation evidence, then moves both task and goal to `blocked` for operator review.
+
 ## Agent selection
 
 Candidates must be enabled, match the assigned role, and declare either the exact task type or `*`.
+
+When no deployment exists, A2A profiles are excluded from performance routing. Registration is therefore not production authorization. An active deployment may select one exact A2A `(agent_id, model_id)` where the model ID contains the full pinned card digest; the worker must also be explicitly loaded by the runtime.
 
 An active deployment narrows candidates to one exact `(agent_id, model_id)` champion before ranking. If that identity is disabled, incompatible, missing from the worker runtime, or changed, the goal blocks. Silent fallback would bypass the promotion decision and is therefore forbidden.
 
@@ -89,6 +94,7 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Social memory: aggregate and recent outcomes keyed by agent and task type.
 - Audit memory: ordered events for goals, planning, selection, attempts, reviews, retries, recovery, and completion.
 - Evaluation memory: benchmark digests, per-case outcomes, gate metrics, promotion identity, and active deployments.
+- Delegation memory: pinned card identity, durable message and remote task IDs, poll state, normalized result digest, and sanitized terminal category.
 
 SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. This keeps the database inspectable while preserving typed Python contracts.
 
@@ -115,6 +121,9 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - MCP tools without local risk classification are not registered; server hints cannot lower risk.
 - Evaluation recommendations never change routing without explicit, identity-checked promotion.
 - Deployed task types block when their champion is unavailable rather than falling back.
+- A2A requests require exact pinned card, interface, protocol version, skill, and optional tenant identities.
+- A2A sends persist `submitting` first; timeout, connection loss, 5xx, or malformed success becomes terminal `unknown` and is never automatically resent.
+- Remote output accepts bounded text and structured data only; local review still decides PASS or FAIL.
 
 ## Extension example
 

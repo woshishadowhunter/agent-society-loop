@@ -55,6 +55,10 @@ class OpenAICompatibleProvider:
             with urlopen(request, timeout=self.timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
+            try:
+                error.read(65_537)
+            finally:
+                error.close()
             raise RuntimeError(
                 f"model provider returned HTTP {error.code}"
             ) from None

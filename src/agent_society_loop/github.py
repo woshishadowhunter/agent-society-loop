@@ -55,7 +55,7 @@ class GitHubIssueClient:
             raise ValueError("issue number must be positive")
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "agent-society-loop/0.2",
+            "User-Agent": "agent-society-loop/0.6",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         if self._token:
@@ -73,6 +73,10 @@ class GitHubIssueClient:
                 if len(raw) > self.max_response_bytes:
                     raise ValueError("GitHub response is too large")
         except HTTPError as error:
+            try:
+                error.read(self.max_response_bytes + 1)
+            finally:
+                error.close()
             raise RuntimeError(f"GitHub returned HTTP {error.code}") from None
         except URLError as error:
             raise RuntimeError(f"GitHub connection failed: {error.reason}") from None
@@ -139,7 +143,7 @@ class GitHubPullRequestClient:
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
-                "User-Agent": "agent-society-loop/0.4",
+                "User-Agent": "agent-society-loop/0.6",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )
@@ -149,6 +153,10 @@ class GitHubPullRequestClient:
                 if len(raw) > self.max_response_bytes:
                     raise ValueError("GitHub response is too large")
         except HTTPError as error:
+            try:
+                error.read(self.max_response_bytes + 1)
+            finally:
+                error.close()
             raise RuntimeError(f"GitHub returned HTTP {error.code}") from None
         except URLError as error:
             raise RuntimeError(f"GitHub connection failed: {error.reason}") from None

@@ -91,6 +91,26 @@ The default policy requires at least five cases, no critical failure, no pass-ra
 
 External tools can be adapted from stable MCP `2025-11-25` stdio servers. Discovery is not authority: only tools with an operator-supplied local risk classification are registered, and every adapted call still uses the existing schema, approval, tracing, and budget controls. See [MCP tool integration](docs/mcp.md).
 
+## Delegate to governed A2A specialists
+
+Version 0.6 supports the A2A `1.0` `HTTP+JSON` polling subset. A remote specialist is not trusted through discovery: the operator inspects its Agent Card, pins the raw SHA-256 plus exact interface and skill mapping, evaluates that immutable identity, and explicitly promotes it before production routing can use it.
+
+```bash
+agent-society a2a inspect-card https://agent.example/.well-known/agent-card.json --json
+export ACME_A2A_TOKEN="..."
+agent-society a2a register research-agent \
+  https://agent.example/.well-known/agent-card.json \
+  --sha256 CARD_SHA256 --interface https://agent.example/a2a \
+  --skill research=deep-research --auth-env ACME_A2A_TOKEN --json
+
+# Evaluate and promote the exact a2a:CARD_SHA256 identity first.
+agent-society run examples/a2a-goal-spec.json --db society.db --allow-remote --json
+agent-society a2a delegations --db society.db --json
+agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
+```
+
+Registration alone receives no production traffic. Without an active exact deployment, A2A profiles are excluded; without `--allow-remote`, an active remote deployment blocks instead of falling back. Bearer values are read only from the registered environment-variable name. Plain HTTP requires the explicit development flag and a loopback host. See [Guarded A2A delegation](docs/a2a.md) for benchmark, promotion, timeout, ambiguity, and cancellation procedures.
+
 ## Architecture
 
 ```mermaid
@@ -152,6 +172,11 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society evaluations [RUN_ID]` | Inspect evaluation decisions and raw case outcomes |
 | `agent-society promote RUN_ID --by NAME` | Explicitly promote a recommended challenger |
 | `agent-society deployments` | Inspect active task-type champions |
+| `agent-society a2a inspect-card URL` | Inspect and hash a bounded Agent Card |
+| `agent-society a2a register ...` | Register an exact card, interface, and skill map |
+| `agent-society a2a agents` | Inspect remote trust records |
+| `agent-society a2a delegations [ID]` | Inspect durable remote execution state |
+| `agent-society a2a cancel ID --by NAME` | Cancel a known remote task |
 | `agent-society maintain OWNER/REPO ISSUE` | Produce a reviewed, read-only maintenance proposal |
 | `agent-society maintain ... --apply --check NAME=COMMAND` | Apply approved local changes and run approved named checks |
 | `agent-society maintain ... --publish` | Publish a verified allowed branch as an approved pull request |
@@ -195,7 +220,7 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.5 still runs tasks sequentially in one process and uses tagged lexical retrieval rather than embeddings. MCP support is limited to stable stdio tool discovery and calls; it does not include HTTP transport, resources, sampling, elicitation, or experimental tasks. The runtime cannot delete or rename files, install dependencies, merge, force-push, or modify branch protection. Distributed workers, A2A delegation, concurrent scheduling, online learning, and a web console remain future work.
+Version 0.6 still runs the orchestrator sequentially in one process and uses tagged lexical retrieval rather than embeddings. MCP support remains limited to stable stdio tool discovery and calls. A2A support is outbound `HTTP+JSON` polling only: no inbound server, streaming, webhooks, multi-turn input/auth exchange, file or media parts, automatic discovery, JWS verification, credential acquisition, automatic resend, fallback, or promotion. The runtime cannot delete or rename files, install dependencies, merge, force-push, or modify branch protection. Concurrent scheduling, online learning, and a web console remain future work.
 
 ## Development
 

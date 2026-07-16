@@ -140,6 +140,29 @@ class BenchmarkEvaluatorTests(unittest.TestCase):
         self.assertEqual(outcome.error, "RuntimeError: candidate execution failed")
         self.assertNotIn("private", outcome.error)
 
+    def test_candidate_execution_evidence_is_persisted(self):
+        benchmark = cases()
+
+        def runner(candidate, case):
+            return CandidateExecution(
+                {"score": 80},
+                10,
+                {
+                    "delegation_id": f"delegation-{candidate.agent_id}-{case.case_id}",
+                    "card_sha256": "a" * 64,
+                },
+            )
+
+        run = BenchmarkEvaluator(
+            self.repository, runner, score_output, PromotionPolicy()
+        ).evaluate(benchmark, self.champion, self.challenger)
+
+        outcomes = self.repository.list_evaluation_outcomes(run.run_id)
+        self.assertTrue(all(outcome.evidence for outcome in outcomes))
+        self.assertTrue(
+            all("delegation_id" in outcome.evidence for outcome in outcomes)
+        )
+
     def test_benchmark_digest_is_stable_and_sensitive_to_criteria(self):
         first = cases()
         equivalent = tuple(

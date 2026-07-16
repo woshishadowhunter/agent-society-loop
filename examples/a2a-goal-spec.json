@@ -1,0 +1,19 @@
+{
+  "goal_id": "remote-research-001",
+  "title": "Produce a reviewed research brief",
+  "description": "Delegate analysis to the explicitly promoted specialist and review it locally",
+  "tasks": [
+    {
+      "task_id": "research",
+      "task_type": "research",
+      "description": "Summarize the supplied evidence and state the main uncertainty",
+      "acceptance_criteria": {
+        "required_terms": ["evidence", "uncertainty"],
+        "min_length": 120
+      },
+      "output": "Local deterministic fallback is intentionally not used by an active remote deployment.",
+      "max_attempts": 2
+    }
+  ],
+  "max_actions": 2
+}

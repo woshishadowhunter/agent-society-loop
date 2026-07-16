@@ -16,6 +16,8 @@ from .domain import (
     Artifact,
     Attempt,
     Defect,
+    DelegationRecord,
+    DelegationStatus,
     DeploymentRecord,
     Event,
     EvaluationOutcome,
@@ -27,6 +29,7 @@ from .domain import (
     PerformanceRecord,
     PublicationRecord,
     PublicationStatus,
+    RemoteAgentRegistration,
     Review,
     Task,
     TaskStatus,
@@ -179,6 +182,22 @@ class SQLiteRepository:
                 source_run_id TEXT UNIQUE NOT NULL,
                 payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS remote_agents (
+                agent_id TEXT PRIMARY KEY,
+                card_sha256 TEXT UNIQUE NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS delegations (
+                delegation_id TEXT PRIMARY KEY,
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                attempt_no INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(goal_id, task_id, attempt_no, agent_id)
+            );
+            CREATE INDEX IF NOT EXISTS delegations_goal_idx
+                ON delegations(goal_id, task_id, attempt_no);
             """
         )
         self.connection.commit()
@@ -368,6 +387,7 @@ class SQLiteRepository:
         for row in rows:
             data = _load(row["payload"])
             data["task_types"] = tuple(data["task_types"])
+            data.setdefault("execution_kind", "local")
             result.append(AgentProfile(**data))
         return result
 
@@ -379,6 +399,7 @@ class SQLiteRepository:
             return None
         data = _load(row["payload"])
         data["task_types"] = tuple(data["task_types"])
+        data.setdefault("execution_kind", "local")
         return AgentProfile(**data)
 
     def save_performance(self, performance: PerformanceRecord) -> None:
@@ -630,7 +651,12 @@ class SQLiteRepository:
             "WHERE run_id=? ORDER BY rowid",
             (run_id,),
         ).fetchall()
-        return [EvaluationOutcome(**_load(row["payload"])) for row in rows]
+        outcomes = []
+        for row in rows:
+            data = _load(row["payload"])
+            data.setdefault("evidence", {})
+            outcomes.append(EvaluationOutcome(**data))
+        return outcomes
 
     def save_evaluation_run(self, run: EvaluationRun) -> None:
         existing = self.get_evaluation_run(run.run_id)
@@ -738,9 +764,150 @@ class SQLiteRepository:
             )
         return deployment
 
+    def save_remote_agent(self, registration: RemoteAgentRegistration) -> None:
+        existing = self.get_remote_agent(registration.agent_id)
+        if existing is not None and existing != registration:
+            raise ValueError("remote agent identity cannot change")
+        self.connection.execute(
+            "INSERT INTO remote_agents(agent_id, card_sha256, payload) VALUES (?, ?, ?) "
+            "ON CONFLICT(agent_id) DO UPDATE SET payload=excluded.payload",
+            (
+                registration.agent_id,
+                registration.card_sha256,
+                _dump(asdict(registration)),
+            ),
+        )
+        self.connection.commit()
+
+    def save_remote_agent_profile(
+        self,
+        registration: RemoteAgentRegistration,
+        profile: AgentProfile,
+    ) -> None:
+        if (
+            registration.agent_id != profile.agent_id
+            or registration.model_id != profile.model_id
+            or profile.execution_kind != "a2a"
+        ):
+            raise ValueError("remote registration and agent profile do not match")
+        existing_registration = self.get_remote_agent(registration.agent_id)
+        if existing_registration is not None and existing_registration != registration:
+            raise ValueError("remote agent identity cannot change")
+        existing_profile = self.get_agent(profile.agent_id)
+        if existing_profile is not None and existing_profile != profile:
+            raise ValueError("remote agent profile cannot change")
+        try:
+            with self.connection:
+                self.connection.execute(
+                    "INSERT INTO remote_agents(agent_id, card_sha256, payload) "
+                    "VALUES (?, ?, ?) ON CONFLICT(agent_id) DO UPDATE SET "
+                    "payload=excluded.payload",
+                    (
+                        registration.agent_id,
+                        registration.card_sha256,
+                        _dump(asdict(registration)),
+                    ),
+                )
+                self.connection.execute(
+                    "INSERT INTO agents(agent_id, payload) VALUES (?, ?) "
+                    "ON CONFLICT(agent_id) DO UPDATE SET payload=excluded.payload",
+                    (profile.agent_id, _dump(asdict(profile))),
+                )
+        except sqlite3.IntegrityError as error:
+            raise ValueError("remote agent card identity is already registered") from error
+
+    def get_remote_agent(self, agent_id: str) -> RemoteAgentRegistration | None:
+        row = self.connection.execute(
+            "SELECT payload FROM remote_agents WHERE agent_id=?", (agent_id,)
+        ).fetchone()
+        return _remote_agent_from_payload(row["payload"]) if row is not None else None
+
+    def list_remote_agents(self) -> list[RemoteAgentRegistration]:
+        rows = self.connection.execute(
+            "SELECT payload FROM remote_agents ORDER BY agent_id"
+        ).fetchall()
+        return [_remote_agent_from_payload(row["payload"]) for row in rows]
+
+    def save_delegation(self, delegation: DelegationRecord) -> None:
+        existing = self.get_delegation(delegation.delegation_id)
+        immutable = (
+            "goal_id",
+            "task_id",
+            "attempt_no",
+            "agent_id",
+            "model_id",
+            "card_sha256",
+            "message_id",
+            "payload_sha256",
+            "created_at",
+        )
+        if existing is not None and any(
+            getattr(existing, name) != getattr(delegation, name) for name in immutable
+        ):
+            raise ValueError("delegation identity cannot change")
+        try:
+            self.connection.execute(
+                "INSERT INTO delegations("
+                "delegation_id, goal_id, task_id, attempt_no, agent_id, payload"
+                ") VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(delegation_id) DO UPDATE SET payload=excluded.payload",
+                (
+                    delegation.delegation_id,
+                    delegation.goal_id,
+                    delegation.task_id,
+                    delegation.attempt_no,
+                    delegation.agent_id,
+                    _dump(asdict(delegation)),
+                ),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as error:
+            raise ValueError("delegation attempt identity already exists") from error
+
+    def get_delegation(self, delegation_id: str) -> DelegationRecord | None:
+        row = self.connection.execute(
+            "SELECT payload FROM delegations WHERE delegation_id=?", (delegation_id,)
+        ).fetchone()
+        return _delegation_from_payload(row["payload"]) if row is not None else None
+
+    def get_attempt_delegation(
+        self, goal_id: str, task_id: str, attempt_no: int, agent_id: str
+    ) -> DelegationRecord | None:
+        row = self.connection.execute(
+            "SELECT payload FROM delegations "
+            "WHERE goal_id=? AND task_id=? AND attempt_no=? AND agent_id=?",
+            (goal_id, task_id, attempt_no, agent_id),
+        ).fetchone()
+        return _delegation_from_payload(row["payload"]) if row is not None else None
+
+    def list_delegations(self, goal_id: str | None = None) -> list[DelegationRecord]:
+        if goal_id is None:
+            rows = self.connection.execute(
+                "SELECT payload FROM delegations ORDER BY rowid"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT payload FROM delegations WHERE goal_id=? ORDER BY rowid",
+                (goal_id,),
+            ).fetchall()
+        return [_delegation_from_payload(row["payload"]) for row in rows]
+
 
 def _evaluation_run_from_payload(payload: str) -> EvaluationRun:
     data = _load(payload)
     data["status"] = EvaluationStatus(data["status"])
     data["failed_gates"] = tuple(data["failed_gates"])
     return EvaluationRun(**data)
+
+
+def _remote_agent_from_payload(payload: str) -> RemoteAgentRegistration:
+    data = _load(payload)
+    data.setdefault("tenant", "")
+    data["allowed_context_sections"] = tuple(data["allowed_context_sections"])
+    return RemoteAgentRegistration(**data)
+
+
+def _delegation_from_payload(payload: str) -> DelegationRecord:
+    data = _load(payload)
+    data["status"] = DelegationStatus(data["status"])
+    return DelegationRecord(**data)
