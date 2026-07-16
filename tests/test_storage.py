@@ -5,6 +5,7 @@ import sqlite3
 
 from agent_society_loop.domain import (
     AgentProfile,
+    ApprovalRequest,
     Artifact,
     Attempt,
     Event,
@@ -12,12 +13,35 @@ from agent_society_loop.domain import (
     PerformanceRecord,
     Review,
     Task,
+    SpanStatus,
+    TraceSpan,
     Verdict,
 )
 from agent_society_loop.storage import SQLiteRepository
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
+    def test_approval_and_span_survive_database_reopen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "society.db"
+            repository = SQLiteRepository(path)
+            approval = ApprovalRequest.create(
+                "goal", "task", "write_file", {"path": "a"}, "write"
+            )
+            span = TraceSpan.start(
+                "goal", "task", "agent", "tool", "write_file"
+            ).finish(SpanStatus.OK)
+
+            repository.save_approval(approval)
+            repository.save_span(span)
+            repository.close()
+
+            reopened = SQLiteRepository(path)
+            self.assertEqual(reopened.get_approval(approval.approval_id), approval)
+            self.assertEqual(reopened.list_approvals("goal"), [approval])
+            self.assertEqual(reopened.list_spans("goal"), [span])
+            reopened.close()
+
     def test_state_survives_database_reopen(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "society.db"

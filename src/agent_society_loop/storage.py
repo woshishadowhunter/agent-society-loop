@@ -11,6 +11,8 @@ from typing import Any, Iterable
 
 from .domain import (
     AgentProfile,
+    ApprovalRequest,
+    ApprovalStatus,
     Artifact,
     Attempt,
     Defect,
@@ -22,6 +24,8 @@ from .domain import (
     Review,
     Task,
     TaskStatus,
+    SpanStatus,
+    TraceSpan,
     Verdict,
 )
 
@@ -106,6 +110,24 @@ class SQLiteRepository:
                 knowledge_id TEXT PRIMARY KEY,
                 payload TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS approvals (
+                approval_id TEXT PRIMARY KEY,
+                fingerprint TEXT UNIQUE NOT NULL,
+                goal_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS approvals_goal_idx
+                ON approvals(goal_id, task_id);
+            CREATE TABLE IF NOT EXISTS trace_spans (
+                span_id TEXT PRIMARY KEY,
+                trace_id TEXT NOT NULL,
+                goal_id TEXT NOT NULL,
+                task_id TEXT,
+                payload TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS trace_spans_goal_idx
+                ON trace_spans(goal_id, task_id);
             """
         )
         self.connection.commit()
@@ -344,4 +366,76 @@ class SQLiteRepository:
             data = _load(row["payload"])
             data["tags"] = tuple(data["tags"])
             result.append(KnowledgeItem(**data))
+        return result
+
+    def save_approval(self, approval: ApprovalRequest) -> None:
+        self.connection.execute(
+            "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(approval_id) DO UPDATE SET payload=excluded.payload",
+            (
+                approval.approval_id,
+                approval.fingerprint,
+                approval.goal_id,
+                approval.task_id,
+                _dump(asdict(approval)),
+            ),
+        )
+        self.connection.commit()
+
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None:
+        row = self.connection.execute(
+            "SELECT payload FROM approvals WHERE approval_id=?", (approval_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = _load(row["payload"])
+        data["status"] = ApprovalStatus(data["status"])
+        return ApprovalRequest(**data)
+
+    def get_approval_by_fingerprint(self, fingerprint: str) -> ApprovalRequest | None:
+        row = self.connection.execute(
+            "SELECT payload FROM approvals WHERE fingerprint=?", (fingerprint,)
+        ).fetchone()
+        if row is None:
+            return None
+        data = _load(row["payload"])
+        data["status"] = ApprovalStatus(data["status"])
+        return ApprovalRequest(**data)
+
+    def list_approvals(self, goal_id: str | None = None) -> list[ApprovalRequest]:
+        if goal_id is None:
+            rows = self.connection.execute(
+                "SELECT payload FROM approvals ORDER BY rowid"
+            ).fetchall()
+        else:
+            rows = self.connection.execute(
+                "SELECT payload FROM approvals WHERE goal_id=? ORDER BY rowid",
+                (goal_id,),
+            ).fetchall()
+        result = []
+        for row in rows:
+            data = _load(row["payload"])
+            data["status"] = ApprovalStatus(data["status"])
+            result.append(ApprovalRequest(**data))
+        return result
+
+    def save_span(self, span: TraceSpan) -> None:
+        self.connection.execute(
+            "INSERT INTO trace_spans(span_id, trace_id, goal_id, task_id, payload) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (span.span_id, span.trace_id, span.goal_id, span.task_id, _dump(asdict(span))),
+        )
+        self.connection.commit()
+
+    def list_spans(self, goal_id: str) -> list[TraceSpan]:
+        rows = self.connection.execute(
+            "SELECT payload FROM trace_spans WHERE goal_id=? ORDER BY rowid",
+            (goal_id,),
+        ).fetchall()
+        result = []
+        for row in rows:
+            data = _load(row["payload"])
+            data["status"] = SpanStatus(data["status"])
+            result.append(TraceSpan(**data))
         return result
