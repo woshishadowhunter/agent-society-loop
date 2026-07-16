@@ -1,10 +1,13 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
+from agent_society_loop.domain import Goal, GoalStatus, Task, TaskStatus
 from agent_society_loop.scheduler import (
     ClaimStatus,
     TaskClaim,
+    StaleClaim,
     WorkerSession,
     WorkerSessionRejected,
     parse_utc,
@@ -111,6 +114,132 @@ class SchedulerStorageTests(unittest.TestCase):
         with self.assertRaisesRegex(WorkerSessionRejected, "expired"):
             self.first.heartbeat_worker(
                 "worker-a", "session-a", now=PLUS_15, ttl_seconds=10
+            )
+
+
+class SchedulerClaimTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "claims.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+        goal = replace(
+            Goal.create("Schedule", "Claim work", goal_id="g"),
+            status=GoalStatus.RUNNING,
+        )
+        self.first.save_goal(goal)
+        self.first.save_task(Task.create("g", "t", "analysis", "Analyze"))
+        self.first.register_worker(
+            WorkerSession.create(
+                "worker-a", "session-a", ("analysis",), now=AT, ttl_seconds=60
+            )
+        )
+        self.first.register_worker(
+            WorkerSession.create(
+                "worker-b", "session-b", ("analysis",), now=AT, ttl_seconds=60
+            )
+        )
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
+
+    def test_two_connections_claim_once_renew_and_release_with_increasing_token(self):
+        first_claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+
+        self.assertIsNotNone(first_claim)
+        self.assertEqual(first_claim.fencing_token, 1)
+        self.assertIsNone(
+            self.second.claim_task(
+                "g", "t", "worker-b", "session-b", "agent-a",
+                now=PLUS_5, lease_seconds=10,
+            )
+        )
+        renewed = self.first.renew_claim(
+            first_claim.claim_id,
+            "worker-a",
+            "session-a",
+            first_claim.fencing_token,
+            now=PLUS_5,
+            lease_seconds=10,
+        )
+        self.assertEqual(renewed.expires_at, PLUS_15)
+
+        released = self.first.release_claim(
+            renewed.claim_id,
+            "worker-a",
+            "session-a",
+            renewed.fencing_token,
+            now="2026-07-16T00:00:06+00:00",
+            reason="operator drain",
+        )
+        self.assertEqual(released.status, ClaimStatus.RELEASED)
+        self.assertEqual(self.first.list_tasks("g")[0].status, TaskStatus.PENDING)
+
+        replacement = self.second.claim_task(
+            "g", "t", "worker-b", "session-b", "agent-a",
+            now="2026-07-16T00:00:07+00:00", lease_seconds=10,
+        )
+        self.assertEqual(replacement.fencing_token, 2)
+        self.assertEqual(
+            [item.status for item in self.first.list_claims("g")],
+            [ClaimStatus.RELEASED, ClaimStatus.ACTIVE],
+        )
+
+    def test_claim_revalidates_goal_task_dependencies_and_worker_session(self):
+        blocked_goal = replace(self.first.get_goal("g"), status=GoalStatus.PAUSED)
+        self.first.save_goal(blocked_goal)
+        self.assertIsNone(
+            self.first.claim_task(
+                "g", "t", "worker-a", "session-a", "agent-a",
+                now=AT, lease_seconds=10,
+            )
+        )
+        self.first.save_goal(replace(blocked_goal, status=GoalStatus.RUNNING))
+        dependency = Task.create("g", "dep", "analysis", "Dependency", position=0)
+        dependent = Task.create(
+            "g", "child", "analysis", "Child", dependencies=("dep",), position=1
+        )
+        self.first.save_tasks([dependency, dependent])
+
+        self.assertIsNone(
+            self.first.claim_task(
+                "g", "child", "worker-a", "session-a", "agent-a",
+                now=AT, lease_seconds=10,
+            )
+        )
+        self.first.save_task(replace(dependency, status=TaskStatus.SUCCEEDED))
+        self.assertIsNotNone(
+            self.first.claim_task(
+                "g", "child", "worker-a", "session-a", "agent-a",
+                now=AT, lease_seconds=10,
+            )
+        )
+        with self.assertRaisesRegex(WorkerSessionRejected, "superseded"):
+            self.first.claim_task(
+                "g", "t", "worker-a", "wrong-session", "agent-a",
+                now=AT, lease_seconds=10,
+            )
+
+    def test_renewal_requires_exact_live_claim_identity(self):
+        claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+
+        with self.assertRaisesRegex(StaleClaim, "identity"):
+            self.second.renew_claim(
+                claim.claim_id, "worker-a", "session-a", 99,
+                now=PLUS_5, lease_seconds=10,
+            )
+        with self.assertRaisesRegex(StaleClaim, "expired"):
+            self.first.renew_claim(
+                claim.claim_id, "worker-a", "session-a", claim.fencing_token,
+                now="2026-07-16T00:00:10+00:00", lease_seconds=10,
             )
 
 
