@@ -13,6 +13,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Sequence
 
+from .a2a import (
+    A2AHTTPClient,
+    A2ALimits,
+    A2ARemoteExecutor,
+    A2ARemoteWorker,
+    register_remote_agent,
+)
 from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import (
     AgentProfile,
@@ -37,6 +44,7 @@ from .memory import MemoryManager
 from .providers import OpenAICompatibleProvider
 from .selection import PerformanceWeightedSelector
 from .storage import SQLiteRepository
+from .tracing import TraceRecorder
 
 
 def _jsonable(value: Any) -> Any:
@@ -123,7 +131,13 @@ def _agent_id(task_type: str) -> str:
     return f"spec-{slug or 'worker'}"
 
 
-def _build_spec_engine(repository: SQLiteRepository, spec: dict[str, Any]) -> LoopEngine:
+def _build_spec_engine(
+    repository: SQLiteRepository,
+    spec: dict[str, Any],
+    *,
+    allow_remote: bool = False,
+    remote_limits: A2ALimits | None = None,
+) -> LoopEngine:
     workers = {}
     task_types: dict[str, set[str]] = {}
     for task in spec["tasks"]:
@@ -134,6 +148,30 @@ def _build_spec_engine(repository: SQLiteRepository, spec: dict[str, Any]) -> Lo
         repository.save_agent(
             AgentProfile(agent_id, "worker", "static-spec-v1", tuple(sorted(supported)))
         )
+    if allow_remote:
+        active_identities = {
+            (deployment.champion_agent_id, deployment.champion_model_id)
+            for deployment in repository.list_deployments()
+        }
+        limits = remote_limits or A2ALimits()
+        for registration in repository.list_remote_agents():
+            if (registration.agent_id, registration.model_id) not in active_identities:
+                continue
+            token = _registration_token(registration.auth_env)
+            client = A2AHTTPClient(
+                auth_token=token,
+                limits=limits,
+                allow_insecure_localhost=registration.allow_insecure_localhost,
+            )
+            workers[registration.agent_id] = A2ARemoteWorker(
+                A2ARemoteExecutor(
+                    repository,
+                    registration,
+                    client,
+                    tracer=TraceRecorder(repository),
+                    limits=limits,
+                )
+            )
     memory = MemoryManager(repository)
     return LoopEngine(
         planner=SpecPlanner(spec["tasks"]),
@@ -144,6 +182,35 @@ def _build_spec_engine(repository: SQLiteRepository, spec: dict[str, Any]) -> Lo
         selector=PerformanceWeightedSelector(),
         budget=RunBudget(max_actions=int(spec.get("max_actions", 100))),
     )
+
+
+def _registration_token(auth_env: str) -> str:
+    if not auth_env:
+        return ""
+    token = os.environ.get(auth_env, "")
+    if not token:
+        raise ValueError(f"remote authentication environment variable is missing: {auth_env}")
+    return token
+
+
+def _parse_skill_declarations(values: Sequence[str]) -> dict[str, str]:
+    skills: dict[str, str] = {}
+    for declaration in values:
+        task_type, separator, skill_id = declaration.partition("=")
+        task_type = task_type.strip()
+        skill_id = skill_id.strip()
+        if (
+            not separator
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", task_type)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", skill_id)
+        ):
+            raise ValueError("skills must use TASK_TYPE=SKILL_ID with safe identifiers")
+        if task_type in skills:
+            raise ValueError(f"duplicate remote task type: {task_type}")
+        skills[task_type] = skill_id
+    if not skills:
+        raise ValueError("at least one --skill TASK_TYPE=SKILL_ID is required")
+    return skills
 
 
 def _status(repository: SQLiteRepository, goal_id: str) -> dict[str, Any]:
@@ -323,6 +390,10 @@ def build_parser() -> argparse.ArgumentParser:
     run = commands.add_parser("run", help="run a JSON goal specification")
     run.add_argument("spec")
     run.add_argument("--db", default="agent-society.db")
+    run.add_argument("--allow-remote", action="store_true")
+    run.add_argument("--remote-timeout", type=float, default=60.0)
+    run.add_argument("--remote-max-polls", type=int, default=20)
+    run.add_argument("--remote-poll-interval", type=float, default=0.25)
     run.add_argument("--json", action="store_true")
 
     status = commands.add_parser("status", help="inspect goal state and artifacts")
@@ -366,6 +437,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     deployments.add_argument("--db", default="agent-society.db")
     deployments.add_argument("--json", action="store_true")
+
+    a2a = commands.add_parser("a2a", help="manage pinned A2A 1.0 remote agents")
+    a2a_commands = a2a.add_subparsers(dest="a2a_command", required=True)
+    inspect_card = a2a_commands.add_parser(
+        "inspect-card", help="inspect a bounded Agent Card"
+    )
+    inspect_card.add_argument("url")
+    inspect_card.add_argument("--allow-insecure-localhost", action="store_true")
+    inspect_card.add_argument("--db", default="agent-society.db")
+    inspect_card.add_argument("--json", action="store_true")
+    register = a2a_commands.add_parser(
+        "register", help="register an operator-pinned remote agent"
+    )
+    register.add_argument("agent_id")
+    register.add_argument("card_url")
+    register.add_argument("--sha256", required=True)
+    register.add_argument("--interface", required=True)
+    register.add_argument("--skill", action="append", default=[])
+    register.add_argument("--auth-env", default="")
+    register.add_argument(
+        "--allow-context",
+        action="append",
+        default=[],
+        choices=(
+            "goal",
+            "task_context",
+            "dependency_artifacts",
+            "review_feedback",
+            "knowledge",
+        ),
+    )
+    register.add_argument("--allow-insecure-localhost", action="store_true")
+    register.add_argument("--db", default="agent-society.db")
+    register.add_argument("--json", action="store_true")
+    remote_agents = a2a_commands.add_parser("agents", help="list remote trust records")
+    remote_agents.add_argument("--db", default="agent-society.db")
+    remote_agents.add_argument("--json", action="store_true")
+    delegations = a2a_commands.add_parser(
+        "delegations", help="inspect durable remote delegations"
+    )
+    delegations.add_argument("delegation_id", nargs="?")
+    delegations.add_argument("--db", default="agent-society.db")
+    delegations.add_argument("--json", action="store_true")
+    cancel = a2a_commands.add_parser("cancel", help="cancel a known remote task")
+    cancel.add_argument("delegation_id")
+    cancel.add_argument("--by", required=True)
+    cancel.add_argument("--db", default="agent-society.db")
+    cancel.add_argument("--json", action="store_true")
 
     maintain = commands.add_parser(
         "maintain", help="inspect a GitHub issue and produce a reviewed proposal"
@@ -458,7 +577,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "run":
             spec = _load_spec(args.spec)
-            engine = _build_spec_engine(repository, spec)
+            remote_limits = A2ALimits(
+                request_timeout=min(10.0, args.remote_timeout),
+                total_timeout=args.remote_timeout,
+                max_polls=args.remote_max_polls,
+                poll_interval=args.remote_poll_interval,
+            )
+            engine = _build_spec_engine(
+                repository,
+                spec,
+                allow_remote=args.allow_remote,
+                remote_limits=remote_limits,
+            )
             goal_id = str(spec.get("goal_id") or "") or None
             if goal_id and repository.get_goal(goal_id) is not None:
                 raise ValueError(f"goal already exists: {goal_id}")
@@ -468,6 +598,76 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = engine.run(goal.goal_id)
             _emit(report, args.json, f"Goal {report.goal_id}: {report.status.value}")
             return 0 if report.status.value == "succeeded" else 1
+
+        if args.command == "a2a":
+            if args.a2a_command == "inspect-card":
+                client = A2AHTTPClient(
+                    allow_insecure_localhost=args.allow_insecure_localhost
+                )
+                value = client.inspect_card(args.url)
+                _emit(value, args.json, f"Agent Card SHA-256: {value.sha256}")
+                return 0
+            if args.a2a_command == "register":
+                skills = _parse_skill_declarations(args.skill)
+                token = _registration_token(args.auth_env)
+                client = A2AHTTPClient(
+                    auth_token=token,
+                    allow_insecure_localhost=args.allow_insecure_localhost,
+                )
+                contexts = tuple(args.allow_context) or ("review_feedback",)
+                value = register_remote_agent(
+                    repository,
+                    client,
+                    args.agent_id,
+                    args.card_url,
+                    args.sha256,
+                    args.interface,
+                    skills,
+                    auth_env=args.auth_env,
+                    allowed_context_sections=contexts,
+                    allow_insecure_localhost=args.allow_insecure_localhost,
+                )
+                _emit(value, args.json, f"Registered remote agent {value.agent_id}")
+                return 0
+            if args.a2a_command == "agents":
+                value = repository.list_remote_agents()
+                _emit(value, args.json, f"{len(value)} remote agents")
+                return 0
+            if args.a2a_command == "delegations":
+                if args.delegation_id:
+                    value = repository.get_delegation(args.delegation_id)
+                    if value is None:
+                        raise KeyError(
+                            f"delegation not found: {args.delegation_id}"
+                        )
+                    human = f"Delegation {value.delegation_id}: {value.status.value}"
+                else:
+                    value = repository.list_delegations()
+                    human = f"{len(value)} delegations"
+                _emit(value, args.json, human)
+                return 0
+            delegation = repository.get_delegation(args.delegation_id)
+            if delegation is None:
+                raise KeyError(f"delegation not found: {args.delegation_id}")
+            registration = repository.get_remote_agent(delegation.agent_id)
+            if registration is None or registration.model_id != delegation.model_id:
+                raise ValueError("delegation remote identity is unavailable")
+            token = _registration_token(registration.auth_env)
+            limits = A2ALimits()
+            executor = A2ARemoteExecutor(
+                repository,
+                registration,
+                A2AHTTPClient(
+                    auth_token=token,
+                    limits=limits,
+                    allow_insecure_localhost=registration.allow_insecure_localhost,
+                ),
+                tracer=TraceRecorder(repository),
+                limits=limits,
+            )
+            value = executor.cancel(delegation.delegation_id, args.by)
+            _emit(value, args.json, f"Delegation {value.delegation_id}: {value.status.value}")
+            return 0
 
         if args.command == "status":
             value = _status(repository, args.goal_id)
