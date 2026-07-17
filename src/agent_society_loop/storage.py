@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .domain import (
     AgentProfile,
@@ -45,8 +45,10 @@ from .domain import (
     VerificationResult,
     Verdict,
     WorkspaceSnapshot,
+    transition_goal,
 )
 from .scheduler import (
+    ClaimedTask,
     ClaimStatus,
     StaleClaim,
     TaskClaim,
@@ -431,49 +433,127 @@ class SQLiteRepository:
             if active is not None:
                 return None
 
-            fence_row = self.connection.execute(
-                "SELECT last_token FROM task_claim_fences WHERE goal_id=? AND task_id=?",
-                (goal_id, task_id),
-            ).fetchone()
-            fencing_token = 1 if fence_row is None else int(fence_row["last_token"]) + 1
-            self.connection.execute(
-                "INSERT INTO task_claim_fences(goal_id, task_id, last_token) VALUES (?, ?, ?) "
-                "ON CONFLICT(goal_id, task_id) DO UPDATE SET last_token=excluded.last_token",
-                (goal_id, task_id, fencing_token),
-            )
-            claim = TaskClaim.create(
-                goal_id,
-                task_id,
+            claim, _ = self._create_claim_locked(
                 session,
+                task,
                 agent_id,
-                fencing_token,
                 now=now,
                 lease_seconds=lease_seconds,
             )
-            running = replace(
-                task, status=TaskStatus.RUNNING, assigned_agent_id=agent_id
-            )
-            self.connection.execute(
-                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
-                (_dump(asdict(running)), goal_id, task_id),
-            )
-            self.connection.execute(
-                "INSERT INTO task_claims(claim_id, goal_id, task_id, worker_id, "
-                "session_id, fencing_token, status, expires_at, payload) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    claim.claim_id,
-                    claim.goal_id,
-                    claim.task_id,
-                    claim.worker_id,
-                    claim.session_id,
-                    claim.fencing_token,
-                    claim.status.value,
-                    claim.expires_at,
-                    _dump(asdict(claim)),
-                ),
-            )
         return claim
+
+    def claim_next_task(
+        self,
+        worker_id: str,
+        session_id: str,
+        assignments: Mapping[str, str],
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> ClaimedTask | None:
+        normalized = {str(key).strip(): str(value).strip() for key, value in assignments.items()}
+        if not normalized or any(not key or not value for key, value in normalized.items()):
+            raise ValueError("assignments must map task types to agent identifiers")
+        with self._immediate_transaction():
+            session = self._require_worker_session_locked(worker_id, session_id, now)
+            if not set(normalized).issubset(session.capabilities):
+                raise ValueError("assignments must be within worker session capabilities")
+
+            running_goals = {
+                row["goal_id"]
+                for row in self.connection.execute(
+                    "SELECT goal_id, payload FROM goals ORDER BY goal_id"
+                ).fetchall()
+                if GoalStatus(_load(row["payload"])["status"]) == GoalStatus.RUNNING
+            }
+            rows = self.connection.execute(
+                "SELECT goal_id, task_id, payload FROM tasks ORDER BY goal_id, position, task_id"
+            ).fetchall()
+            tasks = [self._task_from_payload(row["payload"]) for row in rows]
+            statuses = {
+                (task.goal_id, task.task_id): task.status for task in tasks
+            }
+            for task in tasks:
+                if (
+                    task.goal_id not in running_goals
+                    or task.status != TaskStatus.PENDING
+                    or task.task_type not in normalized
+                    or any(
+                        statuses.get((task.goal_id, dependency_id))
+                        != TaskStatus.SUCCEEDED
+                        for dependency_id in task.dependencies
+                    )
+                ):
+                    continue
+                active = self.connection.execute(
+                    "SELECT 1 FROM task_claims "
+                    "WHERE goal_id=? AND task_id=? AND status='active'",
+                    (task.goal_id, task.task_id),
+                ).fetchone()
+                if active is not None:
+                    continue
+                claim, running = self._create_claim_locked(
+                    session,
+                    task,
+                    normalized[task.task_type],
+                    now=now,
+                    lease_seconds=lease_seconds,
+                )
+                return ClaimedTask(claim, running)
+        return None
+
+    def _create_claim_locked(
+        self,
+        session: WorkerSession,
+        task: Task,
+        agent_id: str,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> tuple[TaskClaim, Task]:
+        fence_row = self.connection.execute(
+            "SELECT last_token FROM task_claim_fences WHERE goal_id=? AND task_id=?",
+            (task.goal_id, task.task_id),
+        ).fetchone()
+        fencing_token = 1 if fence_row is None else int(fence_row["last_token"]) + 1
+        self.connection.execute(
+            "INSERT INTO task_claim_fences(goal_id, task_id, last_token) VALUES (?, ?, ?) "
+            "ON CONFLICT(goal_id, task_id) DO UPDATE SET last_token=excluded.last_token",
+            (task.goal_id, task.task_id, fencing_token),
+        )
+        claim = TaskClaim.create(
+            task.goal_id,
+            task.task_id,
+            session,
+            agent_id,
+            fencing_token,
+            now=now,
+            lease_seconds=lease_seconds,
+        )
+        running = replace(
+            task, status=TaskStatus.RUNNING, assigned_agent_id=agent_id
+        )
+        self.connection.execute(
+            "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+            (_dump(asdict(running)), task.goal_id, task.task_id),
+        )
+        self.connection.execute(
+            "INSERT INTO task_claims(claim_id, goal_id, task_id, worker_id, "
+            "session_id, fencing_token, status, expires_at, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                claim.claim_id,
+                claim.goal_id,
+                claim.task_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                claim.status.value,
+                claim.expires_at,
+                _dump(asdict(claim)),
+            ),
+        )
+        return claim, running
 
     def _require_claim_locked(
         self,
@@ -569,6 +649,110 @@ class SQLiteRepository:
                         "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
                         (_dump(asdict(pending)), task.goal_id, task.task_id),
                     )
+        return released
+
+    def pause_claim_for_approval(
+        self,
+        claim: TaskClaim,
+        approval: ApprovalRequest,
+        *,
+        now: str,
+    ) -> TaskClaim:
+        """Atomically persist an approval and surrender the claimed task."""
+        with self._immediate_transaction():
+            self._require_worker_session_locked(claim.worker_id, claim.session_id, now)
+            current = self._require_claim_locked(
+                claim.claim_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                now,
+            )
+            if (
+                approval.goal_id != current.goal_id
+                or approval.task_id != current.task_id
+                or approval.status != ApprovalStatus.PENDING
+            ):
+                raise ValueError("approval identity does not match active claim")
+
+            approval_row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if approval_row is not None:
+                data = _load(approval_row["payload"])
+                data["status"] = ApprovalStatus(data["status"])
+                if ApprovalRequest(**data) != approval:
+                    raise ValueError("approval identity cannot change")
+            else:
+                self.connection.execute(
+                    "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        approval.approval_id,
+                        approval.fingerprint,
+                        approval.goal_id,
+                        approval.task_id,
+                        _dump(asdict(approval)),
+                    ),
+                )
+
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                (current.goal_id, current.task_id),
+            ).fetchone()
+            goal_row = self.connection.execute(
+                "SELECT payload FROM goals WHERE goal_id=?", (current.goal_id,)
+            ).fetchone()
+            if task_row is None or goal_row is None:
+                raise StaleClaim("claimed task or goal no longer exists")
+            task = self._task_from_payload(task_row["payload"])
+            goal_data = _load(goal_row["payload"])
+            goal_data["status"] = GoalStatus(goal_data["status"])
+            goal = Goal(**goal_data)
+            if (
+                task.status != TaskStatus.RUNNING
+                or task.assigned_agent_id != current.agent_id
+                or goal.status != GoalStatus.RUNNING
+            ):
+                raise StaleClaim("claim identity no longer owns running work")
+
+            reason = f"approval required for tool {approval.tool_name}"
+            released = current.finish(ClaimStatus.RELEASED, now=now, reason=reason)
+            pending = replace(task, status=TaskStatus.PENDING, assigned_agent_id=None)
+            paused = transition_goal(goal, GoalStatus.PAUSED, reason)
+            event = Event.create(
+                current.goal_id,
+                "approval.requested",
+                {
+                    "approval_id": approval.approval_id,
+                    "task_id": current.task_id,
+                    "tool_name": approval.tool_name,
+                    "claim_id": current.claim_id,
+                    "fencing_token": current.fencing_token,
+                },
+            )
+            self.connection.execute(
+                "UPDATE task_claims SET status=?, expires_at=?, payload=? WHERE claim_id=?",
+                (
+                    released.status.value,
+                    released.expires_at,
+                    _dump(asdict(released)),
+                    released.claim_id,
+                ),
+            )
+            self.connection.execute(
+                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                (_dump(asdict(pending)), pending.goal_id, pending.task_id),
+            )
+            self.connection.execute(
+                "UPDATE goals SET payload=? WHERE goal_id=?",
+                (_dump(asdict(paused)), paused.goal_id),
+            )
+            self.connection.execute(
+                "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                (event.event_id, event.goal_id, _dump(asdict(event))),
+            )
         return released
 
     def get_claim(self, claim_id: str) -> TaskClaim | None:
@@ -805,6 +989,7 @@ class SQLiteRepository:
                 "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
                 (_dump(asdict(task)), task.goal_id, task.task_id),
             )
+            self._reconcile_goal_locked(task)
             committed = current.finish(ClaimStatus.COMMITTED, now=now)
             self.connection.execute(
                 "UPDATE task_claims SET status=?, payload=? "
@@ -817,6 +1002,54 @@ class SQLiteRepository:
                 ),
             )
         return committed
+
+    def _reconcile_goal_locked(self, committed_task: Task) -> None:
+        goal_row = self.connection.execute(
+            "SELECT payload FROM goals WHERE goal_id=?", (committed_task.goal_id,)
+        ).fetchone()
+        if goal_row is None:
+            raise StaleClaim("claimed goal no longer exists")
+        goal_data = _load(goal_row["payload"])
+        goal_data["status"] = GoalStatus(goal_data["status"])
+        goal = Goal(**goal_data)
+        if goal.status != GoalStatus.RUNNING:
+            raise StaleClaim("claimed goal is no longer running")
+
+        target: GoalStatus | None = None
+        reason = ""
+        if committed_task.status == TaskStatus.FAILED:
+            target = GoalStatus.FAILED
+            reason = f"task {committed_task.task_id} failed"
+        elif committed_task.status == TaskStatus.BLOCKED:
+            target = GoalStatus.BLOCKED
+            reason = f"task {committed_task.task_id} blocked"
+        elif committed_task.status == TaskStatus.SUCCEEDED:
+            task_rows = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=?", (committed_task.goal_id,)
+            ).fetchall()
+            tasks = [self._task_from_payload(row["payload"]) for row in task_rows]
+            if tasks and all(task.status == TaskStatus.SUCCEEDED for task in tasks):
+                target = GoalStatus.SUCCEEDED
+
+        if target is None:
+            return
+        updated = transition_goal(goal, target, reason)
+        self.connection.execute(
+            "UPDATE goals SET payload=? WHERE goal_id=?",
+            (_dump(asdict(updated)), updated.goal_id),
+        )
+        event = Event.create(
+            updated.goal_id,
+            f"goal.{target.value}",
+            {
+                "task_id": committed_task.task_id,
+                **({"reason": reason} if reason else {}),
+            },
+        )
+        self.connection.execute(
+            "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+            (event.event_id, event.goal_id, _dump(asdict(event))),
+        )
 
     def save_goal(self, goal: Goal) -> None:
         self.connection.execute(
@@ -1096,19 +1329,46 @@ class SQLiteRepository:
         return result
 
     def save_approval(self, approval: ApprovalRequest) -> None:
-        self.connection.execute(
-            "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(approval_id) DO UPDATE SET payload=excluded.payload",
-            (
-                approval.approval_id,
-                approval.fingerprint,
-                approval.goal_id,
-                approval.task_id,
-                _dump(asdict(approval)),
-            ),
-        )
-        self.connection.commit()
+        with self._immediate_transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if row is not None:
+                data = _load(row["payload"])
+                data["status"] = ApprovalStatus(data["status"])
+                current = ApprovalRequest(**data)
+                if current == approval:
+                    return
+                if (
+                    current.status != ApprovalStatus.PENDING
+                    or approval.status
+                    not in {ApprovalStatus.APPROVED, ApprovalStatus.REJECTED}
+                    or replace(
+                        approval,
+                        status=current.status,
+                        decided_at=current.decided_at,
+                        decided_by=current.decided_by,
+                    )
+                    != current
+                ):
+                    raise ValueError("approval identity cannot change")
+                self.connection.execute(
+                    "UPDATE approvals SET payload=? WHERE approval_id=?",
+                    (_dump(asdict(approval)), approval.approval_id),
+                )
+                return
+            self.connection.execute(
+                "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    approval.approval_id,
+                    approval.fingerprint,
+                    approval.goal_id,
+                    approval.task_id,
+                    _dump(asdict(approval)),
+                ),
+            )
 
     def save_approval_resolution(
         self,
@@ -1117,13 +1377,45 @@ class SQLiteRepository:
         goal: Goal | None = None,
     ) -> None:
         """Commit an approval decision, lifecycle state, and audit events atomically."""
-        with self.connection:
-            cursor = self.connection.execute(
+        with self._immediate_transaction():
+            approval_row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if approval_row is None:
+                raise KeyError(f"approval not found: {approval.approval_id}")
+            data = _load(approval_row["payload"])
+            data["status"] = ApprovalStatus(data["status"])
+            current = ApprovalRequest(**data)
+            expected_pending = replace(
+                approval,
+                status=ApprovalStatus.PENDING,
+                decided_at="",
+                decided_by="",
+            )
+            if current.status != ApprovalStatus.PENDING:
+                raise ValueError("approval request is already resolved")
+            if current != expected_pending:
+                raise ValueError("approval identity cannot change")
+            if goal is not None:
+                goal_row = self.connection.execute(
+                    "SELECT payload FROM goals WHERE goal_id=?", (goal.goal_id,)
+                ).fetchone()
+                if goal_row is None:
+                    raise KeyError(f"goal not found: {goal.goal_id}")
+                goal_data = _load(goal_row["payload"])
+                goal_data["status"] = GoalStatus(goal_data["status"])
+                current_goal = Goal(**goal_data)
+                if (
+                    current_goal.goal_id != approval.goal_id
+                    or current_goal.status != GoalStatus.PAUSED
+                    or goal.status not in {GoalStatus.RUNNING, GoalStatus.FAILED}
+                ):
+                    raise ValueError("approval goal is no longer paused")
+            self.connection.execute(
                 "UPDATE approvals SET payload=? WHERE approval_id=?",
                 (_dump(asdict(approval)), approval.approval_id),
             )
-            if cursor.rowcount != 1:
-                raise KeyError(f"approval not found: {approval.approval_id}")
             if goal is not None:
                 self.connection.execute(
                     "UPDATE goals SET payload=? WHERE goal_id=?",

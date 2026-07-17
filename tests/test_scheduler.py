@@ -29,6 +29,12 @@ from agent_society_loop.scheduler import (
     validate_duration,
 )
 from agent_society_loop.storage import SQLiteRepository
+from tests.scheduler_conformance import (
+    ApprovalPauseContract,
+    ClaimNextTaskContract,
+    OwnershipConformanceContract,
+    OutcomeReconciliationContract,
+)
 
 
 AT = "2026-07-16T00:00:00+00:00"
@@ -291,6 +297,56 @@ class SchedulerClaimTests(unittest.TestCase):
             )
 
 
+class SQLiteClaimNextTaskTests(ClaimNextTaskContract, unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "claim-next.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
+
+
+class SQLiteApprovalPauseTests(ApprovalPauseContract, unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "approval-pause.db"
+        self.first = SQLiteRepository(self.path)
+
+    def tearDown(self):
+        self.first.close()
+        self.directory.cleanup()
+
+
+class SQLiteOutcomeReconciliationTests(
+    OutcomeReconciliationContract, unittest.TestCase
+):
+    def setUp(self):
+        self.repository = SQLiteRepository(":memory:")
+        self.first = self.repository
+
+    def tearDown(self):
+        self.repository.close()
+
+
+class SQLiteOwnershipConformanceTests(
+    OwnershipConformanceContract, unittest.TestCase
+):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "ownership.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
+
+
 class SchedulerOutcomeTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -443,6 +499,37 @@ class SchedulerOutcomeTests(unittest.TestCase):
         self.assertEqual(self.first.list_artifacts("g", "t"), [])
         self.assertEqual(self.first.list_attempts("g", "t"), [])
         self.assertEqual(self.first.list_reviews("g", "t"), [])
+
+    def test_terminal_goal_event_failure_rolls_back_the_entire_fenced_commit(self):
+        claim = self.first.claim_task(
+            "g", "t", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        outcome = self._make_outcome(claim, "agent-a")
+        self.first.connection.execute(
+            """
+            CREATE TRIGGER reject_terminal_goal_event
+            BEFORE INSERT ON events
+            WHEN json_extract(NEW.payload, '$.event_type') = 'goal.succeeded'
+            BEGIN
+                SELECT RAISE(ABORT, 'terminal event failure');
+            END
+            """
+        )
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "terminal event failure"):
+            self.first.commit_claim_outcome(
+                claim, *outcome[:-1], [outcome[-1]], now=PLUS_5
+            )
+
+        self.assertEqual(self.first.get_goal("g").status, GoalStatus.RUNNING)
+        self.assertEqual(self.first.get_claim(claim.claim_id).status, ClaimStatus.ACTIVE)
+        self.assertEqual(self.first.list_tasks("g")[0].status, TaskStatus.RUNNING)
+        self.assertEqual(self.first.list_artifacts("g", "t"), [])
+        self.assertEqual(self.first.list_attempts("g", "t"), [])
+        self.assertEqual(self.first.list_reviews("g", "t"), [])
+        self.assertEqual(self.first.get_performance("agent-a", "analysis"), None)
+        self.assertEqual(self.first.list_events("g"), [])
 
     def test_succeeded_task_requires_a_passing_review_and_artifact(self):
         claim = self.first.claim_task(

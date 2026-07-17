@@ -205,6 +205,9 @@ class LoopEngineTests(unittest.TestCase):
         resolved = engine.resolve_approval(
             approval.approval_id, approved=True, decided_by="operator"
         )
+        self.assertEqual(
+            self.repository.get_goal(goal.goal_id).status, GoalStatus.RUNNING
+        )
         completed = engine.resume(goal.goal_id)
 
         self.assertEqual(resolved.status, ApprovalStatus.APPROVED)
@@ -255,6 +258,26 @@ class LoopEngineTests(unittest.TestCase):
         self.assertEqual(events[-1], "goal.succeeded")
         performance = self.repository.get_performance("worker-a", "copywriting")
         self.assertEqual((performance.attempts, performance.passes), (2, 1))
+
+    def test_plan_persists_work_without_executing_and_is_idempotent(self):
+        engine = self.engine(TwoTaskPlanner())
+        goal = engine.create_goal("Queued", "Execute elsewhere", goal_id="queued")
+
+        first = engine.plan(goal.goal_id)
+        second = engine.plan(goal.goal_id)
+
+        self.assertEqual(first.status, GoalStatus.RUNNING)
+        self.assertEqual(second.status, GoalStatus.RUNNING)
+        self.assertEqual(first.tasks_total, 2)
+        self.assertEqual(first.attempts, 0)
+        self.assertEqual(self.worker.calls, [])
+        self.assertEqual(
+            [task.status for task in self.repository.list_tasks("queued")],
+            [TaskStatus.PENDING, TaskStatus.PENDING],
+        )
+        events = [event.event_type for event in self.repository.list_events("queued")]
+        self.assertEqual(events.count("goal.planned"), 1)
+        self.assertEqual(events.count("goal.running"), 1)
 
     def test_invalid_plan_fails_goal_before_work_starts(self):
         engine = self.engine(DuplicatePlanner())

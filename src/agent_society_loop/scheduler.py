@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
+from .domain import Task
+
 
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _MAX_DURATION_SECONDS = 86_400
@@ -204,6 +206,22 @@ class TaskClaim:
             finished_at=current,
             reason=_bounded_reason(reason),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimedTask:
+    """A task snapshot and the lease that exclusively owns its execution."""
+
+    claim: TaskClaim
+    task: Task
+
+    def __post_init__(self) -> None:
+        if (
+            self.claim.goal_id != self.task.goal_id
+            or self.claim.task_id != self.task.task_id
+            or self.claim.agent_id != self.task.assigned_agent_id
+        ):
+            raise ValueError("claimed task identity must match its claim")
 
 
 def run_scheduler_self_test(

@@ -54,7 +54,7 @@ flowchart LR
     W --> R[质量审查 / 内循环]
     R -->|不通过：结构化缺陷| W
     R -->|通过| O
-    M[(SQLite 三类记忆)] --> O
+    M[(SQLite 或 PostgreSQL 执行状态)] --> O
     M --> S
     W --> M
     R --> M
@@ -174,9 +174,35 @@ agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 
 运行时只导入 TCK 报告，不会下载或执行 TCK。源码修订号和工具版本是操作者提供的来源信息，不是签名或信任根；Bearer 值仍不会进入 SQLite。外部 TCK 流程、策略结构、doctor 检查、恢复规则和威胁边界见 [A2A 安全委派](docs/a2a.md)。
 
-## 验证调度所有权安全
+## 运行持久化 Worker 进程
 
-v0.8 补上了进入多 worker 进程之前必须具备的正确性内核：持久化 worker session、事务化任务领取、可续期租约、单调递增的 fencing token、显式过期恢复，以及原子化的 fenced outcome 提交。
+v0.9 将规划与执行分离。`enqueue` 负责校验并持久化任务图；一个或多个 worker 进程发现已就绪任务，用独立数据库连接维护租约，执行并质检结果，最后凭 fencing token 原子提交完整结果。
+
+先用 SQLite 运行内置的双任务规范：
+
+```bash
+agent-society enqueue examples/goal-spec.json --db society.db --json
+agent-society worker run --worker-id local-a \
+  --agent-id spec-research --agent-id spec-writing \
+  --max-tasks 3 --db society.db --json
+agent-society status evidence-brief-demo --db society.db --json
+```
+
+SQLite 适合单机多进程。跨主机 worker 应安装可选 PostgreSQL 适配器，并让协调器、worker 与查询命令连接同一个 PostgreSQL 权威数据源：
+
+```bash
+python -m pip install -e ".[postgres]"
+export AGENT_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
+agent-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
+agent-society worker run --worker-id worker-a \
+  --agent-id spec-research --agent-id spec-writing \
+  --max-tasks 3 --postgres-schema agent_society --json
+agent-society status evidence-brief-demo --postgres-schema agent_society --json
+```
+
+PostgreSQL 使用带 `SKIP LOCKED` 的行锁发现就绪任务。两个后端都执行进程代际隔离、可续租 lease、任务级单调 fencing token、结果与目标状态原子对账，以及 fenced 审批暂停。worker 一旦丢失 session 或 claim，就会丢弃本地结果；收到 `SIGINT` 或 `SIGTERM` 时先排空当前 claim，再停止发现新任务。
+
+以下命令可验证 SQLite 所有权内核并检查调度证据：
 
 ```bash
 agent-society scheduler self-test --json
@@ -185,9 +211,9 @@ agent-society scheduler claims --goal-id GOAL_ID --db society.db --json
 agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --json
 ```
 
-自检会打开两个独立 SQLite 连接，真实验证五项不变量：同一任务只有一个有效领取者、只有精确持有者能够续租、接管后的 token 必须增大、旧 worker 晚到的结果必须零残留拒绝、当前 worker 的完整结果必须原子提交。普通任务过期后回到 `pending`；A2A 委派若停在 `submitting`、`unknown` 或 `interrupted`，任务会转为 `blocked`，避免重复远程提交；`accepted` 和 `completed` 仍可按既有证据安全恢复。
+自检会打开两个独立 SQLite 连接，真实验证五项不变量：同一任务只有一个有效领取者、只有精确持有者能够续租、接管后的 token 必须增大、旧 worker 晚到的结果必须零残留拒绝、当前 worker 的完整结果必须原子提交。同一套后端无关契约会在 CI 的 PostgreSQL 17 服务上执行。SQLite 的过期恢复继续遵守 v0.7 A2A 不重发规则；PostgreSQL 适配器只覆盖本地执行平面，不覆盖 A2A 治理和远程委派恢复。
 
-`SchedulerRepository` 协议不绑定数据库，但当前 SQLite 实现只保证同一台主机上的多进程正确性。接入方式、恢复规则和威胁边界见 [调度安全文档](docs/scheduler.md)。
+worker 生命周期、后端范围、恢复、审批和威胁边界见 [调度安全文档](docs/scheduler.md)。
 
 ## 常用命令
 
@@ -195,6 +221,8 @@ agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --js
 | --- | --- |
 | `agent-society demo` | 运行离线量子咖啡杯演示 |
 | `agent-society run SPEC.json` | 执行 JSON 任务图 |
+| `agent-society enqueue SPEC.json` | 只规划并持久化任务图，不立即执行 |
+| `agent-society worker run ...` | 领取、续租、执行、质检并提交队列任务 |
 | `agent-society status GOAL_ID` | 查看目标、任务、质检和产物 |
 | `agent-society events GOAL_ID` | 查看有序审计事件 |
 | `agent-society agents` | 查看 Agent 档案和绩效 |
@@ -226,7 +254,7 @@ agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --js
 | `agent-society knowledge add` | 添加长期种子知识 |
 | `agent-society knowledge search` | 检索长期知识 |
 
-所有命令都支持 `--db` 指定数据库；执行报告和查询命令支持 `--json`。
+SQLite 命令使用 `--db`；执行平面命令还支持 `--database-url` 或 `AGENT_SOCIETY_DATABASE_URL`，并可用 `--postgres-schema` 隔离 schema。执行报告和查询命令支持 `--json`。
 
 ## 接入真实模型
 
@@ -254,7 +282,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.8 已为共享本地 SQLite 的多进程提供租约和 fencing 安全，但内置 `LoopEngine` 仍顺序执行，也没有附带 worker daemon。SQLite WAL 不能用于跨主机或网络文件系统，因此本版本不宣称具备分布式调度能力。Fencing 只保护仓库写入；模型、工具、HTTP 和文件系统等外部副作用仍需要适配器提供幂等键或远端 epoch 校验。MCP 仍仅支持稳定版 stdio；A2A 仍仅支持出站 `HTTP+JSON` 轮询。网络安全的仓库后端、worker 服务、在线学习和 Web 控制台仍属于后续工作。
+v0.9 已提供持久 worker 服务和支持跨主机任务处理的 PostgreSQL 执行后端，但它还不是完整控制平面。PostgreSQL 负责目标、本地任务、产物、质检、attempt、绩效、事件、worker、claim、审批和 trace；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。租约判断使用可信 worker 显式提供的 UTC 时间，生产主机仍需时钟同步。Fencing 只保护仓库写入，不保证外部 exactly-once；模型、工具、HTTP 与文件系统适配器仍需幂等键或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；消息队列投递、自动扩缩容、租户隔离和 Web 控制台仍是后续工作。
 
 ## 开发与验证
 

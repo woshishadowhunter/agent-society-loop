@@ -29,12 +29,19 @@ from .a2a_reliability import (
     run_reliability_campaign,
 )
 from .scheduler import (
+    ClaimedTask,
     ClaimStatus,
     StaleClaim,
     TaskClaim,
     WorkerSession,
     WorkerSessionRejected,
     run_scheduler_self_test,
+)
+from .worker_service import (
+    WorkerRunResult,
+    WorkerRunStatus,
+    WorkerService,
+    WorkerServiceConfig,
 )
 
 from .domain import (
@@ -128,11 +135,16 @@ __all__ = [
     "ReliabilityReport",
     "run_reliability_campaign",
     "ClaimStatus",
+    "ClaimedTask",
     "StaleClaim",
     "TaskClaim",
     "WorkerSession",
     "WorkerSessionRejected",
     "run_scheduler_self_test",
+    "WorkerRunResult",
+    "WorkerRunStatus",
+    "WorkerService",
+    "WorkerServiceConfig",
 ]
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"

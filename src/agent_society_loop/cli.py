@@ -6,12 +6,14 @@ import argparse
 import json
 import os
 import re
+import signal
 import shlex
 import sys
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Sequence
+from uuid import uuid4
 
 from .a2a import (
     A2AHTTPClient,
@@ -52,10 +54,16 @@ from .maintenance import (
 )
 from .memory import MemoryManager
 from .providers import OpenAICompatibleProvider
+from .postgres_storage import PostgreSQLRepository
 from .selection import PerformanceWeightedSelector
 from .scheduler import parse_utc, run_scheduler_self_test
 from .storage import SQLiteRepository
 from .tracing import TraceRecorder
+from .worker_service import (
+    WorkerRunStatus,
+    WorkerService,
+    WorkerServiceConfig,
+)
 
 
 def _jsonable(value: Any) -> Any:
@@ -400,6 +408,39 @@ def _database_protected_paths(database: str, workspace: Path) -> tuple[str, ...]
     return (relative, f"{relative}-shm", f"{relative}-wal")
 
 
+def _add_postgres_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--database-url")
+    parser.add_argument("--postgres-schema", default="agent_society")
+
+
+def _open_repository(args):
+    database_url = getattr(args, "database_url", None) or os.environ.get(
+        "AGENT_SOCIETY_DATABASE_URL", ""
+    )
+    if database_url:
+        supported = {
+            "enqueue",
+            "worker",
+            "status",
+            "events",
+            "agents",
+            "scheduler",
+            "traces",
+            "approvals",
+            "approve",
+            "reject",
+        }
+        if args.command not in supported:
+            raise ValueError(
+                f"PostgreSQL execution backend does not support command: {args.command}"
+            )
+        return PostgreSQLRepository(
+            database_url,
+            schema=getattr(args, "postgres_schema", "agent_society"),
+        )
+    return SQLiteRepository(args.db)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-society",
@@ -421,18 +462,46 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--remote-poll-interval", type=float, default=0.25)
     run.add_argument("--json", action="store_true")
 
+    enqueue = commands.add_parser(
+        "enqueue", help="plan a JSON goal specification for worker processes"
+    )
+    enqueue.add_argument("spec")
+    enqueue.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(enqueue)
+    enqueue.add_argument("--json", action="store_true")
+
+    worker = commands.add_parser("worker", help="run lease-owned worker processes")
+    worker_commands = worker.add_subparsers(dest="worker_command", required=True)
+    worker_run = worker_commands.add_parser("run", help="claim and execute queued tasks")
+    worker_run.add_argument("--worker-id", required=True)
+    worker_run.add_argument("--session-id")
+    worker_run.add_argument("--agent-id", dest="agent_ids", action="append", required=True)
+    limit = worker_run.add_mutually_exclusive_group()
+    limit.add_argument("--once", action="store_true")
+    limit.add_argument("--max-tasks", type=int)
+    worker_run.add_argument("--heartbeat-ttl", type=int, default=60)
+    worker_run.add_argument("--lease", type=int, default=30)
+    worker_run.add_argument("--renew-interval", type=float, default=10.0)
+    worker_run.add_argument("--poll-interval", type=float, default=1.0)
+    worker_run.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(worker_run)
+    worker_run.add_argument("--json", action="store_true")
+
     status = commands.add_parser("status", help="inspect goal state and artifacts")
     status.add_argument("goal_id")
     status.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(status)
     status.add_argument("--json", action="store_true")
 
     events = commands.add_parser("events", help="inspect an ordered audit trail")
     events.add_argument("goal_id")
     events.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(events)
     events.add_argument("--json", action="store_true")
 
     agents = commands.add_parser("agents", help="inspect agents and social memory")
     agents.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(agents)
     agents.add_argument("--json", action="store_true")
 
     evaluate = commands.add_parser(
@@ -474,6 +543,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scheduler_workers.add_argument("--at")
     scheduler_workers.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(scheduler_workers)
     scheduler_workers.add_argument("--json", action="store_true")
     scheduler_claims = scheduler_commands.add_parser(
         "claims", help="list task claim history"
@@ -481,12 +551,14 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_claims.add_argument("--goal-id")
     scheduler_claims.add_argument("--at")
     scheduler_claims.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(scheduler_claims)
     scheduler_claims.add_argument("--json", action="store_true")
     scheduler_reap = scheduler_commands.add_parser(
         "reap", help="recover task claims expired at an explicit UTC time"
     )
     scheduler_reap.add_argument("--at", required=True)
     scheduler_reap.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(scheduler_reap)
     scheduler_reap.add_argument("--json", action="store_true")
     scheduler_self_test = scheduler_commands.add_parser(
         "self-test", help="run the deterministic scheduler safety campaign"
@@ -648,11 +720,13 @@ def build_parser() -> argparse.ArgumentParser:
     traces = commands.add_parser("traces", help="inspect linked execution spans")
     traces.add_argument("goal_id")
     traces.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(traces)
     traces.add_argument("--json", action="store_true")
 
     approvals = commands.add_parser("approvals", help="inspect durable approvals")
     approvals.add_argument("goal_id")
     approvals.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(approvals)
     approvals.add_argument("--json", action="store_true")
 
     for name in ("approve", "reject"):
@@ -660,6 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
         decision.add_argument("approval_id")
         decision.add_argument("--by", required=True)
         decision.add_argument("--db", default="agent-society.db")
+        _add_postgres_options(decision)
         decision.add_argument("--json", action="store_true")
 
     knowledge = commands.add_parser("knowledge", help="manage long-term knowledge")
@@ -681,8 +756,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    repository = SQLiteRepository(args.db)
+    repository = None
     try:
+        repository = _open_repository(args)
         if args.command == "demo":
             engine = build_demo_engine(repository)
             goal = repository.get_goal(args.goal_id)
@@ -701,18 +777,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0 if report.status.value == "succeeded" else 1
 
-        if args.command == "run":
+        if args.command in {"run", "enqueue"}:
             spec = _load_spec(args.spec)
-            remote_limits = A2ALimits(
-                request_timeout=min(10.0, args.remote_timeout),
-                total_timeout=args.remote_timeout,
-                max_polls=args.remote_max_polls,
-                poll_interval=args.remote_poll_interval,
-            )
+            remote_limits = None
+            if args.command == "run":
+                remote_limits = A2ALimits(
+                    request_timeout=min(10.0, args.remote_timeout),
+                    total_timeout=args.remote_timeout,
+                    max_polls=args.remote_max_polls,
+                    poll_interval=args.remote_poll_interval,
+                )
             engine = _build_spec_engine(
                 repository,
                 spec,
-                allow_remote=args.allow_remote,
+                allow_remote=args.allow_remote if args.command == "run" else False,
                 remote_limits=remote_limits,
             )
             goal_id = str(spec.get("goal_id") or "") or None
@@ -721,9 +799,77 @@ def main(argv: Sequence[str] | None = None) -> int:
             goal = engine.create_goal(
                 str(spec["title"]), str(spec["description"]), goal_id=goal_id
             )
-            report = engine.run(goal.goal_id)
+            report = (
+                engine.run(goal.goal_id)
+                if args.command == "run"
+                else engine.plan(goal.goal_id)
+            )
             _emit(report, args.json, f"Goal {report.goal_id}: {report.status.value}")
+            if args.command == "enqueue":
+                return 0 if report.status.value == "running" else 1
             return 0 if report.status.value == "succeeded" else 1
+
+        if args.command == "worker":
+            profiles = {profile.agent_id: profile for profile in repository.list_agents()}
+            assignments: dict[str, str] = {}
+            workers = {}
+            for agent_id in args.agent_ids:
+                profile = profiles.get(agent_id)
+                if profile is None:
+                    raise ValueError(f"agent not found: {agent_id}")
+                if profile.role != "worker" or profile.execution_kind != "local":
+                    raise ValueError(f"agent is not a local worker: {agent_id}")
+                if "*" in profile.task_types:
+                    raise ValueError(
+                        f"worker CLI requires explicit task types: {agent_id}"
+                    )
+                for task_type in profile.task_types:
+                    owner = assignments.get(task_type)
+                    if owner is not None and owner != agent_id:
+                        raise ValueError(
+                            f"task type {task_type} is assigned to multiple agents"
+                        )
+                    assignments[task_type] = agent_id
+                workers[agent_id] = SpecWorker(agent_id)
+            config = WorkerServiceConfig(
+                worker_id=args.worker_id,
+                session_id=args.session_id or f"session-{uuid4().hex[:16]}",
+                heartbeat_ttl_seconds=args.heartbeat_ttl,
+                lease_seconds=args.lease,
+                renew_interval_seconds=args.renew_interval,
+                poll_interval_seconds=args.poll_interval,
+            )
+            service = WorkerService(
+                repository=repository,
+                repository_factory=lambda: _open_repository(args),
+                workers=workers,
+                assignments=assignments,
+                reviewer=CriteriaReviewer(),
+                config=config,
+            )
+            if args.once:
+                value = service.run_once()
+            else:
+                previous_handlers = {}
+
+                def request_stop(signum, frame):
+                    service.stop()
+
+                try:
+                    for signum in (signal.SIGINT, signal.SIGTERM):
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, request_stop)
+                    value = service.run(max_tasks=args.max_tasks)
+                finally:
+                    for signum, handler in previous_handlers.items():
+                        signal.signal(signum, handler)
+            _emit(
+                value,
+                args.json,
+                f"Worker {args.worker_id}: {value.status.value}"
+                + (f" {value.goal_id}/{value.task_id}" if value.task_id else ""),
+            )
+            return 3 if value.status == WorkerRunStatus.LOST else 0
 
         if args.command == "scheduler":
             if args.scheduler_command == "self-test":
@@ -1150,4 +1296,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {message}", file=sys.stderr)
         return 2
     finally:
-        repository.close()
+        if repository is not None:
+            repository.close()

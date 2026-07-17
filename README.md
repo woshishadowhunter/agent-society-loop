@@ -126,9 +126,35 @@ Policy decisions are persisted before payload construction and network I/O. Poli
 
 The runtime imports but never downloads or executes the TCK. The source revision and tool version are operator-supplied provenance, not a signature or trust root. Bearer values remain outside SQLite. See [Guarded A2A delegation](docs/a2a.md) for the external TCK procedure, policy schema, doctor checks, recovery rules, and threat boundary.
 
-## Prove scheduler ownership safety
+## Run durable worker processes
 
-Version 0.8 adds the correctness kernel required before execution can move to multiple worker processes: durable worker sessions, transactional task claims, renewable leases, monotonic fencing tokens, explicit expiry recovery, and atomic fenced outcome commits.
+Version 0.9 separates planning from execution. `enqueue` persists a validated task graph, and one or more worker processes discover ready work, renew their leases on an independent database connection, review each result, and commit the complete outcome through a fencing token.
+
+Run the bundled two-task specification on SQLite:
+
+```bash
+agent-society enqueue examples/goal-spec.json --db society.db --json
+agent-society worker run --worker-id local-a \
+  --agent-id spec-research --agent-id spec-writing \
+  --max-tasks 3 --db society.db --json
+agent-society status evidence-brief-demo --db society.db --json
+```
+
+SQLite supports multiple processes on one host. For multi-host workers, install the optional PostgreSQL adapter and point every coordinator, worker, and inspection command at one PostgreSQL authority:
+
+```bash
+python -m pip install -e ".[postgres]"
+export AGENT_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
+agent-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
+agent-society worker run --worker-id worker-a \
+  --agent-id spec-research --agent-id spec-writing \
+  --max-tasks 3 --postgres-schema agent_society --json
+agent-society status evidence-brief-demo --postgres-schema agent_society --json
+```
+
+PostgreSQL ready-task discovery uses row locking with `SKIP LOCKED`. Both backends enforce process generations, renewable leases, monotonic task-local fencing tokens, atomic outcome/goal reconciliation, and fenced approval pauses. A worker that loses its session or claim discards its local result. `SIGINT` and `SIGTERM` stop new discovery only after the active claim has drained.
+
+Prove the SQLite ownership kernel and inspect live scheduler evidence:
 
 ```bash
 agent-society scheduler self-test --json
@@ -137,9 +163,9 @@ agent-society scheduler claims --goal-id GOAL_ID --db society.db --json
 agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --json
 ```
 
-The self-test opens two independent SQLite connections and proves five invariants: exclusive claim, exact-owner renewal, increasing token after takeover, zero-partial-write rejection of a stale worker, and complete commit by the current worker. Expiry recovery returns ordinary work to `pending`; an A2A delegation in `submitting`, `unknown`, or `interrupted` blocks instead of risking a duplicate remote submission. Accepted and completed A2A work remains resumable.
+The self-test opens two independent SQLite connections and proves five invariants: exclusive claim, exact-owner renewal, increasing token after takeover, zero-partial-write rejection of a stale worker, and complete commit by the current worker. The same backend-neutral conformance contracts run against PostgreSQL 17 in CI. SQLite expiry recovery preserves the v0.7 no-resend rules for A2A state; the PostgreSQL adapter deliberately covers the local execution plane, not A2A governance or remote-delegation recovery.
 
-The `SchedulerRepository` protocol is backend-neutral, but the bundled implementation is deliberately limited to multiple processes on one host. See [Scheduler safety](docs/scheduler.md) for integration, recovery, and threat boundaries.
+See [Scheduler safety](docs/scheduler.md) for worker lifecycle, backend scope, recovery, approval, and threat boundaries.
 
 ## Architecture
 
@@ -152,7 +178,7 @@ flowchart LR
     W --> R[Reviewer / inner loop]
     R -->|FAIL + defects| W
     R -->|PASS| O
-    M[(SQLite memory)] --> O
+    M[(SQLite or PostgreSQL execution state)] --> O
     M --> S
     W --> M
     R --> M
@@ -195,6 +221,8 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | --- | --- |
 | `agent-society demo` | Run the offline quantum mug scenario |
 | `agent-society run SPEC.json` | Execute a deterministic JSON task graph |
+| `agent-society enqueue SPEC.json` | Plan and persist a task graph without executing it |
+| `agent-society worker run ...` | Claim, renew, execute, review, and commit queued tasks |
 | `agent-society status GOAL_ID` | Inspect goal, tasks, reviews, and artifacts |
 | `agent-society events GOAL_ID` | Read the ordered audit trail |
 | `agent-society agents` | Inspect agent profiles and performance |
@@ -226,7 +254,7 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society knowledge add` | Add long-term seed knowledge |
 | `agent-society knowledge search` | Retrieve relevant seed knowledge |
 
-All commands accept `--db`. Inspection commands and execution reports accept `--json`.
+SQLite commands accept `--db`. Execution-plane commands also accept `--database-url` or `AGENT_SOCIETY_DATABASE_URL` plus `--postgres-schema`. Inspection commands and execution reports accept `--json`.
 
 ## Connect an OpenAI-compatible provider
 
@@ -259,7 +287,7 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.8 provides lease and fencing safety for multiple processes sharing a local SQLite database, but the bundled `LoopEngine` still executes sequentially and no worker daemon is included. SQLite WAL is not supported across hosts or network filesystems, so this release does not claim distributed scheduling. Fencing protects repository writes; external model, tool, HTTP, and filesystem side effects still require adapter-level idempotency or a remote epoch check. MCP remains stable stdio only. A2A remains outbound `HTTP+JSON` polling only, without inbound service, streaming, webhooks, file/media parts, automatic discovery, credential acquisition, automatic resend, fallback, promotion, TCK execution, or cryptographic attestation verification. A network-safe repository adapter and worker service remain future work.
+Version 0.9 provides a durable worker service and a PostgreSQL execution backend for multi-host task processing. It is not a complete control plane: PostgreSQL owns goals, local tasks, artifacts, reviews, attempts, performance, events, workers, claims, approvals, and traces, while A2A governance, evaluation, publication, and maintenance workflows remain on the SQLite path and must not be split across databases. The worker cannot forcibly cancel an arbitrary Python call; shutdown drains the current claim, and lease loss rejects the eventual repository commit. Runtime lease decisions use explicit UTC timestamps supplied by trusted worker processes, so production hosts still require clock synchronization. Fencing protects repository writes, not external exactly-once execution; model, tool, HTTP, and filesystem adapters need idempotency keys or a remotely enforced fencing epoch. MCP remains stable stdio only. A2A remains outbound `HTTP+JSON` polling only, without inbound service, streaming, webhooks, automatic resend, or automatic credential acquisition. Message-broker delivery, autoscaling, tenant isolation, and a web control plane remain future work.
 
 ## Development
 

@@ -2,6 +2,17 @@
 
 All notable changes are documented here.
 
+## 0.9.0 - 2026-07-17
+
+- Added coordinator-only `enqueue` planning and a durable worker service with deterministic ready-task discovery, independent lease maintenance, execute-review-retry processing, bounded task counts, and graceful signal draining.
+- Added atomic terminal goal reconciliation to fenced outcome commits so task, evidence, performance, events, claim, and goal state cannot diverge.
+- Added fenced approval pauses that persist the request, release ownership, restore the task to pending, pause the goal without consuming an attempt, and resume the goal transactionally after approval.
+- Added an optional PostgreSQL execution backend with JSONB state, normalized scheduler indexes, `FOR UPDATE SKIP LOCKED` discovery, monotonic fencing, process-generation protection, expiry recovery, approvals, and traces.
+- Added `--database-url`, `AGENT_SOCIETY_DATABASE_URL`, and `--postgres-schema` routing for supported execution-plane and approval commands; unsupported governance commands fail closed instead of falling back to SQLite.
+- Added shared SQLite/PostgreSQL conformance contracts for dependency ordering, competing consumers, lease renewal, release, takeover, stale-owner rejection, session supersession, terminal reconciliation, and approval pause/resume.
+- Added a PostgreSQL 17 CI service gate alongside the Python 3.10-3.14 SQLite matrix.
+- Documented the single-authority rule, trusted UTC clock assumption, SQLite same-host boundary, PostgreSQL execution-plane scope, graceful-drain behavior, and external exactly-once limitation.
+
 ## 0.8.0 - 2026-07-16
 
 - Added backend-neutral `SchedulerRepository` contracts for durable worker sessions, task claims, renewal, release, expiry recovery, and fenced outcome commits.

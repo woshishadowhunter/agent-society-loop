@@ -2,7 +2,7 @@
 
 ## Design boundary
 
-Agent Society Loop is a local orchestration runtime. Its job is to make planning, routing, execution, review, memory, and stopping conditions explicit. Model intelligence remains behind injected protocols.
+Agent Society Loop is an auditable orchestration runtime. Its job is to make planning, routing, execution, review, memory, ownership, and stopping conditions explicit. The synchronous engine and complete governance plane use SQLite; the worker execution plane can use either same-host SQLite or multi-host PostgreSQL. Model intelligence remains behind injected protocols.
 
 ## Module map
 
@@ -11,7 +11,9 @@ Agent Society Loop is a local orchestration runtime. Its job is to make planning
 | `domain.py` | States, immutable data contracts, validation, task DAG checks |
 | `ports.py` | Planner, worker, reviewer, model provider, and scheduler repository protocols |
 | `storage.py` | SQLite schema and durable repository operations |
+| `postgres_storage.py` | PostgreSQL execution-plane schema, queue discovery, and atomic persistence |
 | `scheduler.py` | Worker sessions, task claims, lease/fencing contracts, and deterministic safety campaign |
+| `worker_service.py` | Claim discovery, independent lease maintenance, execute-review, approval pause, and graceful drain |
 | `memory.py` | Context assembly, knowledge retrieval, performance aggregation |
 | `selection.py` | Eligible-agent filtering and explainable ranking |
 | `engine.py` | Goal lifecycle, outer loop, inner loop, budgets, resume |
@@ -100,8 +102,9 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Delegation memory: pinned card identity, durable message and remote task IDs, poll state, normalized result digest, and sanitized terminal category.
 - Governance memory: canonical policy digests, task-type activations, imported conformance attestations, and immutable per-attempt ALLOW/DENY decisions.
 - Scheduler memory: worker sessions, claim history, lease deadlines, and monotonic task-local fencing tokens.
+- Approval memory: pending and resolved guarded tool requests plus linked lifecycle traces.
 
-SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. This keeps the database inspectable while preserving typed Python contracts.
+SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. PostgreSQL uses JSONB payloads plus normalized scheduler columns for row locking, ready-task ordering, status, lease expiry, and fencing. A run has one persistence authority; the runtime does not split claims and outcomes across backends.
 
 ## Safety properties
 
@@ -135,8 +138,12 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Claim acquisition serializes through a short transaction that revalidates worker session, running goal, pending task, and succeeded dependencies.
 - One partial unique index permits at most one active claim per task; every replacement receives a larger fencing token.
 - Outcome commits revalidate exact live ownership and atomically persist artifact, review, attempt, performance, events, final task state, and terminal claim state.
+- Worker approval pauses atomically persist the request, release ownership, restore the task to pending, pause the goal, and consume no attempt; approval resumes the goal transactionally.
 - Expired local work returns to pending, while ambiguous or interrupted remote work blocks rather than replaying an unsafe side effect.
-- SQLite WAL scheduler guarantees apply only to processes on one host; external side effects are outside the local fencing boundary.
+- SQLite WAL scheduler guarantees apply only to processes on one host; PostgreSQL uses row locking with `SKIP LOCKED` for multi-host discovery.
+- PostgreSQL v0.9 covers execution-plane state only; A2A governance, evaluation, publication, and maintenance remain SQLite-only.
+- Explicit trusted UTC timestamps drive lease decisions, so production workers require clock synchronization.
+- External side effects remain outside both fencing boundaries and require adapter-level idempotency or a remotely enforced epoch.
 - The synchronous engine fails closed when a goal has an active scheduler claim, so legacy interruption recovery cannot bypass lease ownership.
 
 ## Scheduler claim state machine
@@ -147,6 +154,7 @@ stateDiagram-v2
     active --> active: exact-owner renewal
     active --> committed: fenced atomic outcome
     active --> released: exact-owner release
+    active --> released: fenced approval pause
     active --> expired: explicit reap at deadline
     expired --> [*]
     released --> [*]
