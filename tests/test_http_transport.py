@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from agent_society_loop.http_transport import (
     HTTPDeadlineExceeded,
+    _begin_response,
     _negotiate_tls,
     post_bytes,
 )
@@ -34,6 +35,36 @@ class DelayedHeaderHandler(BaseHTTPRequestHandler):
 
 
 class HTTPTransportDeadlineTests(unittest.TestCase):
+    def test_response_header_timeout_closes_the_abandoned_response(self):
+        released = threading.Event()
+        closed = threading.Event()
+
+        class BlockingResponse:
+            def __init__(self, connection):
+                return None
+
+            def begin(self):
+                released.wait(timeout=1)
+
+            def close(self):
+                closed.set()
+
+        class Connection:
+            def shutdown(self, how):
+                released.set()
+
+        with patch(
+            "agent_society_loop.http_transport.HTTPResponse",
+            BlockingResponse,
+        ):
+            with self.assertRaises(HTTPDeadlineExceeded):
+                _begin_response(
+                    Connection(),
+                    time.monotonic() + 0.02,
+                )
+
+        self.assertTrue(closed.wait(timeout=1))
+
     def test_tls_wrap_closes_the_detached_source_socket(self):
         class SourceSocket:
             def __init__(self):

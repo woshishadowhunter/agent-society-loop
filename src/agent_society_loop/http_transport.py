@@ -8,7 +8,7 @@ import ssl
 from dataclasses import dataclass
 from http.client import HTTPException, HTTPResponse
 from queue import Empty, Queue
-from threading import Thread
+from threading import Event, Thread
 from time import monotonic
 from urllib.parse import SplitResult, urlsplit
 
@@ -191,6 +191,7 @@ def _begin_response(
 ) -> HTTPResponse:
     response = HTTPResponse(connection)
     result: Queue[BaseException | None] = Queue(maxsize=1)
+    abandoned = Event()
 
     def begin() -> None:
         try:
@@ -199,17 +200,23 @@ def _begin_response(
             result.put(error)
         else:
             result.put(None)
+        finally:
+            if abandoned.is_set():
+                response.close()
 
     Thread(target=begin, name="http-response", daemon=True).start()
     try:
         error = result.get(timeout=_remaining(deadline))
     except Empty:
+        abandoned.set()
         try:
             connection.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
+        response.close()
         raise HTTPDeadlineExceeded("HTTP wall-clock deadline exceeded") from None
     if error is not None:
+        response.close()
         if isinstance(error, TimeoutError):
             raise HTTPDeadlineExceeded(
                 "HTTP wall-clock deadline exceeded"
