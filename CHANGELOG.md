@@ -14,7 +14,7 @@ All notable changes are documented here.
 - Persisted endpoint-bound reviewer identities and attached them to model review traces so reviewer drift fails closed with worker drift.
 - Added bounded database-aggregate `health` and `metrics` snapshots covering workers, claims, approvals, and outbox state without loading durable payload histories.
 - Added optional worker-liveness health checks, a non-root container image, PostgreSQL Docker Compose worker/dispatcher deployment, local model configuration example, and production-oriented deployment guide.
-- Expanded SQLite/PostgreSQL outbox and rollback coverage and increased the suite to 312 tests; PostgreSQL 17 and container smoke tests remain required CI gates.
+- Expanded SQLite/PostgreSQL outbox and rollback coverage and increased the suite to 313 tests; PostgreSQL 17 and container smoke tests remain required CI gates.
 
 ## 0.9.0 - 2026-07-17
 

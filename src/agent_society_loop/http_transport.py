@@ -148,6 +148,7 @@ def _negotiate_tls(
         server_hostname=host,
         do_handshake_on_connect=False,
     )
+    connection.close()
     wrapped.setblocking(False)
     try:
         while True:

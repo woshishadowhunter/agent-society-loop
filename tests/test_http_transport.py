@@ -3,10 +3,11 @@ import threading
 import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_society_loop.http_transport import (
     HTTPDeadlineExceeded,
+    _negotiate_tls,
     post_bytes,
 )
 
@@ -33,6 +34,39 @@ class DelayedHeaderHandler(BaseHTTPRequestHandler):
 
 
 class HTTPTransportDeadlineTests(unittest.TestCase):
+    def test_tls_wrap_closes_the_detached_source_socket(self):
+        class SourceSocket:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class WrappedSocket:
+            def setblocking(self, value):
+                return None
+
+            def do_handshake(self):
+                return None
+
+            def settimeout(self, value):
+                return None
+
+        source = SourceSocket()
+        wrapped = WrappedSocket()
+        context = Mock()
+        context.wrap_socket.return_value = wrapped
+
+        with patch("ssl.create_default_context", return_value=context):
+            result = _negotiate_tls(
+                source,
+                "models.example",
+                time.monotonic() + 1,
+            )
+
+        self.assertIs(result, wrapped)
+        self.assertTrue(source.closed)
+
     def test_dns_resolution_returns_at_the_wall_clock_deadline(self):
         original = socket.getaddrinfo
 
