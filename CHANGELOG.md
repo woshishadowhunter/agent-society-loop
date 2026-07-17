@@ -2,6 +2,14 @@
 
 All notable changes are documented here.
 
+## 1.0.0 - 2026-07-17
+
+- Promoted the v0.10 local-model worker, PostgreSQL execution-plane, scheduler fencing, and transactional outbox runtime to the first stable product boundary.
+- Added `agent-society product self-test`, a single install-time readiness command that verifies release metadata, required operator docs, the deterministic double-loop demo, scheduler safety invariants, and A2A failure-safety scenarios.
+- Added a production runbook covering preflight, database authority, local model workers, health checks, recovery, outbox delivery, backup, upgrade, and supported boundaries.
+- Added a release checklist for local verification, package smoke tests, CI gates, release metadata, and GitHub Release notes.
+- Marked package metadata as production/stable while keeping the documented boundaries explicit: no hosted web control plane, no inbound A2A service, and no automatic exactly-once guarantee for external systems.
+
 ## 0.10.0 - 2026-07-17
 
 - Added strict, secret-free local model runtime configuration with endpoint-bound model identities, explicit task ownership, independent model review, and fail-closed identity drift checks.

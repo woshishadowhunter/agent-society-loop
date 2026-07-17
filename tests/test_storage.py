@@ -32,7 +32,7 @@ from agent_society_loop.storage import SQLiteRepository
 
 class SQLiteRepositoryTests(unittest.TestCase):
     def test_public_version_matches_release(self):
-        self.assertEqual(__version__, "0.10.0")
+        self.assertEqual(__version__, "1.0.0")
 
     def test_scheduler_now_uses_database_utc_clock(self):
         repository = SQLiteRepository(":memory:")

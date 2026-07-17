@@ -25,6 +25,7 @@ git clone https://github.com/woshishadowhunter/agent-society-loop.git
 cd agent-society-loop
 python -m pip install -e .
 agent-society demo --db demo.db
+agent-society product self-test --json
 ```
 
 预期结果：
@@ -42,6 +43,8 @@ agent-society agents --db demo.db --json
 ```
 
 内置“量子咖啡杯上市材料”演示会故意让市场分析初稿少一个数据来源。质检 Agent 拒绝初稿，缺陷写入短期记忆，市场分析 Agent 在第二次执行时补齐证据并通过。
+
+`product self-test` 是 v1.0 的安装验收命令。它不需要模型 API Key，会检查发布版本、必需运维文档、确定性双循环演示、调度租约安全不变量，以及本地 A2A 故障安全场景。
 
 ## 工作流程
 
@@ -251,6 +254,7 @@ PostgreSQL、Docker Compose、模型配置、Webhook 投递和剩余边界见
 | 命令 | 用途 |
 | --- | --- |
 | `agent-society demo` | 运行离线量子咖啡杯演示 |
+| `agent-society product self-test` | 运行 v1.0 安装验收检查 |
 | `agent-society run SPEC.json` | 执行 JSON 任务图 |
 | `agent-society enqueue SPEC.json` | 只规划并持久化任务图，不立即执行 |
 | `agent-society worker run ...` | 领取、续租、执行、质检并提交队列任务 |
@@ -324,7 +328,9 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.10 已提供模型配置 Worker、数据库权威租约时间、事务 Outbox、有界健康与指标快照及容器部署文件，但它仍不是完整控制平面。PostgreSQL 负责本地执行平面与 Outbox；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。Worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。Outbox fencing 和幂等请求头不能让外部系统自动获得 exactly-once，接收端必须强制校验幂等键。直接模型、工具、HTTP 与文件系统调用仍需适配器级幂等或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；自动扩缩容、租户隔离、完整 OpenTelemetry 导出和 Web 控制台仍是后续工作。
+v1.0 是 CLI/runtime 包的第一个稳定产品边界，包含模型配置 Worker、数据库权威租约时间、事务 Outbox、有界健康与指标快照、容器部署文件，以及安装级产品自测命令。它仍不是完整托管控制平面。PostgreSQL 负责本地执行平面与 Outbox；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。Worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。Outbox fencing 和幂等请求头不能让外部系统自动获得 exactly-once，接收端必须强制校验幂等键。直接模型、工具、HTTP 与文件系统调用仍需适配器级幂等或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；自动扩缩容、租户隔离、完整 OpenTelemetry 导出、入站 A2A 服务和 Web 控制台仍是后续工作。
+
+生产运行请同时阅读 [生产化部署文档](docs/deployment.md) 和 [生产运行手册](docs/production-runbook.md)。发布版本请使用 [v1.0 发布清单](docs/release-checklist.md)。
 
 ## 开发与验证
 
