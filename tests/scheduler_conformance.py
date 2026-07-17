@@ -16,7 +16,12 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
-from agent_society_loop.scheduler import ClaimStatus, WorkerSession
+from agent_society_loop.scheduler import (
+    ClaimStatus,
+    StaleClaim,
+    WorkerSession,
+    WorkerSessionRejected,
+)
 
 
 AT = "2026-07-16T00:00:00+00:00"
@@ -267,3 +272,129 @@ class OutcomeReconciliationContract:
             {"goal.succeeded", "goal.failed", "goal.blocked"}
             & {event.event_type for event in events}
         )
+
+
+class OwnershipConformanceContract:
+    """Lease takeover and fencing behavior shared by all scheduler backends."""
+
+    first: object
+    second: object
+
+    def seed_owned_task(self):
+        goal = replace(
+            Goal.create("Owned", "Fence ownership", goal_id="owned"),
+            status=GoalStatus.RUNNING,
+        )
+        task = Task.create("owned", "task", "analysis", "Analyze")
+        self.first.save_goal(goal)
+        self.first.save_task(task)
+        for worker_id, session_id in (
+            ("worker-a", "session-a"),
+            ("worker-b", "session-b"),
+        ):
+            self.first.register_worker(
+                WorkerSession.create(
+                    worker_id,
+                    session_id,
+                    ("analysis",),
+                    now=AT,
+                    ttl_seconds=60,
+                )
+            )
+        return task
+
+    def outcome_for(self, claim, task):
+        artifact = Artifact.create("owned", "task", claim.agent_id, "accepted")
+        review = Review.create(
+            "owned", "task", 1, Verdict.PASS, 91, (), "Accepted"
+        )
+        attempt = Attempt.create(
+            "owned", "task", claim.agent_id, 1, 10,
+            artifact.artifact_id, review.review_id,
+        )
+        performance = PerformanceRecord(
+            claim.agent_id, "analysis", 1, 1, 91, 10
+        )
+        succeeded = replace(
+            task,
+            status=TaskStatus.SUCCEEDED,
+            assigned_agent_id=claim.agent_id,
+            artifact_id=artifact.artifact_id,
+        )
+        return (
+            succeeded,
+            artifact,
+            attempt,
+            review,
+            performance,
+            (Event.create("owned", "task.attempt_completed", {}),),
+        )
+
+    def test_renew_release_and_reclaim_use_a_monotonic_fence(self) -> None:
+        self.seed_owned_task()
+        first = self.first.claim_task(
+            "owned", "task", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        renewed = self.second.renew_claim(
+            first.claim_id, "worker-a", "session-a", first.fencing_token,
+            now="2026-07-16T00:00:05+00:00", lease_seconds=10,
+        )
+        released = self.first.release_claim(
+            renewed.claim_id, "worker-a", "session-a", renewed.fencing_token,
+            now="2026-07-16T00:00:06+00:00", reason="drain",
+        )
+        replacement = self.second.claim_task(
+            "owned", "task", "worker-b", "session-b", "agent-b",
+            now="2026-07-16T00:00:07+00:00", lease_seconds=10,
+        )
+
+        self.assertEqual(released.status, ClaimStatus.RELEASED)
+        self.assertEqual(renewed.expires_at, "2026-07-16T00:00:15+00:00")
+        self.assertEqual(replacement.fencing_token, first.fencing_token + 1)
+
+    def test_expiry_rejects_stale_commit_and_current_owner_commits(self) -> None:
+        original = self.seed_owned_task()
+        stale = self.first.claim_task(
+            "owned", "task", "worker-a", "session-a", "agent-a",
+            now=AT, lease_seconds=10,
+        )
+        expired = self.second.reap_expired_claims(
+            now="2026-07-16T00:00:10+00:00"
+        )
+        current = self.second.claim_task(
+            "owned", "task", "worker-b", "session-b", "agent-b",
+            now="2026-07-16T00:00:11+00:00", lease_seconds=10,
+        )
+
+        with self.assertRaises(StaleClaim):
+            self.first.commit_claim_outcome(
+                stale,
+                *self.outcome_for(stale, original),
+                now="2026-07-16T00:00:12+00:00",
+            )
+
+        self.assertEqual([item.status for item in expired], [ClaimStatus.EXPIRED])
+        self.assertEqual(self.first.list_artifacts("owned", "task"), [])
+        running = self.second.list_tasks("owned")[0]
+        outcome = self.outcome_for(current, running)
+        committed = self.second.commit_claim_outcome(
+            current, *outcome, now="2026-07-16T00:00:12+00:00"
+        )
+        self.assertEqual(committed.status, ClaimStatus.COMMITTED)
+        self.assertEqual(self.first.get_goal("owned").status, GoalStatus.SUCCEEDED)
+
+    def test_new_worker_generation_supersedes_the_old_session(self) -> None:
+        self.seed_owned_task()
+        replacement = WorkerSession.create(
+            "worker-a", "session-new", ("analysis",),
+            now="2026-07-16T00:00:01+00:00", ttl_seconds=60,
+        )
+        self.second.register_worker(replacement)
+
+        with self.assertRaisesRegex(WorkerSessionRejected, "superseded"):
+            self.first.heartbeat_worker(
+                "worker-a", "session-a",
+                now="2026-07-16T00:00:02+00:00", ttl_seconds=60,
+            )
+        self.assertEqual(self.first.get_worker("worker-a"), replacement)

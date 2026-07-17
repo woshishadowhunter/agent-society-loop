@@ -31,6 +31,7 @@ from agent_society_loop.scheduler import (
 from agent_society_loop.storage import SQLiteRepository
 from tests.scheduler_conformance import (
     ClaimNextTaskContract,
+    OwnershipConformanceContract,
     OutcomeReconciliationContract,
 )
 
@@ -317,6 +318,21 @@ class SQLiteOutcomeReconciliationTests(
 
     def tearDown(self):
         self.repository.close()
+
+
+class SQLiteOwnershipConformanceTests(
+    OwnershipConformanceContract, unittest.TestCase
+):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.path = Path(self.directory.name) / "ownership.db"
+        self.first = SQLiteRepository(self.path)
+        self.second = SQLiteRepository(self.path)
+
+    def tearDown(self):
+        self.second.close()
+        self.first.close()
+        self.directory.cleanup()
 
 
 class SchedulerOutcomeTests(unittest.TestCase):
