@@ -30,6 +30,8 @@ from .domain import (
     Goal,
     GoalStatus,
     KnowledgeItem,
+    OutboxMessage,
+    OutboxStatus,
     PerformanceRecord,
     PolicyActivation,
     PolicyDecision,
@@ -54,6 +56,7 @@ from .scheduler import (
     TaskClaim,
     WorkerSession,
     WorkerSessionRejected,
+    parse_utc,
 )
 
 
@@ -149,6 +152,8 @@ class SQLiteRepository:
             );
             CREATE INDEX IF NOT EXISTS approvals_goal_idx
                 ON approvals(goal_id, task_id);
+            CREATE INDEX IF NOT EXISTS approvals_status_idx
+                ON approvals(json_extract(payload, '$.status'));
             CREATE TABLE IF NOT EXISTS trace_spans (
                 span_id TEXT PRIMARY KEY,
                 trace_id TEXT NOT NULL,
@@ -277,6 +282,20 @@ class SQLiteRepository:
                 ON task_claims(goal_id, task_id) WHERE status = 'active';
             CREATE INDEX IF NOT EXISTS task_claims_goal_idx
                 ON task_claims(goal_id, task_id, fencing_token);
+            CREATE TABLE IF NOT EXISTS outbox_messages (
+                message_id TEXT PRIMARY KEY,
+                topic TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                status TEXT NOT NULL,
+                available_at TEXT NOT NULL,
+                claim_expires_at TEXT NOT NULL,
+                delivery_token INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                UNIQUE(topic, idempotency_key)
+            );
+            CREATE INDEX IF NOT EXISTS outbox_delivery_idx
+                ON outbox_messages(status, available_at, claim_expires_at, created_at);
             """
         )
         self.connection.commit()
@@ -294,6 +313,294 @@ class SQLiteRepository:
 
     def close(self) -> None:
         self.connection.close()
+
+    def scheduler_now(self) -> str:
+        row = self.connection.execute(
+            "SELECT strftime('%Y-%m-%dT%H:%M:%f+00:00', 'now') AS now"
+        ).fetchone()
+        return str(row["now"])
+
+    def operational_counts(self, now: str) -> dict[str, int]:
+        workers = self.connection.execute(
+            "SELECT COUNT(*) AS total, "
+            "COALESCE(SUM(CASE WHEN expires_at<=? THEN 1 ELSE 0 END), 0) AS expired "
+            "FROM scheduler_workers",
+            (now,),
+        ).fetchone()
+        claims = self.connection.execute(
+            "SELECT COUNT(*) AS active, "
+            "COALESCE(SUM(CASE WHEN expires_at<=? THEN 1 ELSE 0 END), 0) "
+            "AS expired_active FROM task_claims WHERE status='active'",
+            (now,),
+        ).fetchone()
+        approvals = self.connection.execute(
+            "SELECT COUNT(*) AS pending FROM approvals "
+            "WHERE json_extract(payload, '$.status')='pending'"
+        ).fetchone()
+        outbox = {
+            row["status"]: int(row["count"])
+            for row in self.connection.execute(
+                "SELECT status, COUNT(*) AS count FROM outbox_messages GROUP BY status"
+            ).fetchall()
+        }
+        return {
+            "workers_total": int(workers["total"]),
+            "workers_expired": int(workers["expired"]),
+            "claims_active": int(claims["active"]),
+            "claims_expired_active": int(claims["expired_active"]),
+            "approvals_pending": int(approvals["pending"]),
+            "outbox_pending": outbox.get("pending", 0),
+            "outbox_delivering": outbox.get("delivering", 0),
+            "outbox_delivered": outbox.get("delivered", 0),
+            "outbox_failed": outbox.get("failed", 0),
+        }
+
+    @staticmethod
+    def _outbox_from_payload(payload: str) -> OutboxMessage:
+        data = _load(payload)
+        data["status"] = OutboxStatus(data["status"])
+        return OutboxMessage(**data)
+
+    def _enqueue_outbox_locked(self, message: OutboxMessage) -> OutboxMessage:
+        row = self.connection.execute(
+            "SELECT payload FROM outbox_messages "
+            "WHERE topic=? AND idempotency_key=?",
+            (message.topic, message.idempotency_key),
+        ).fetchone()
+        if row is not None:
+            existing = self._outbox_from_payload(row["payload"])
+            if (
+                existing.payload_digest != message.payload_digest
+                or existing.max_attempts != message.max_attempts
+            ):
+                raise ValueError(
+                    "outbox idempotency payload does not match existing message"
+                )
+            return existing
+        self.connection.execute(
+            "INSERT INTO outbox_messages("
+            "message_id, topic, idempotency_key, status, available_at, "
+            "claim_expires_at, delivery_token, created_at, payload"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                message.message_id,
+                message.topic,
+                message.idempotency_key,
+                message.status.value,
+                message.available_at,
+                message.claim_expires_at,
+                message.delivery_token,
+                message.created_at,
+                _dump(asdict(message)),
+            ),
+        )
+        return message
+
+    def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
+        with self._immediate_transaction():
+            return self._enqueue_outbox_locked(message)
+
+    def claim_outbox(
+        self,
+        worker_id: str,
+        *,
+        topic: str | None = None,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage | None:
+        if topic is not None and not str(topic).strip():
+            raise ValueError("outbox topic must not be empty")
+        topic_filter = "topic=? AND " if topic is not None else ""
+        parameters = (
+            (str(topic).strip(), now, now)
+            if topic is not None
+            else (now, now)
+        )
+        with self._immediate_transaction():
+            while True:
+                row = self.connection.execute(
+                    "SELECT payload FROM outbox_messages "
+                    f"WHERE {topic_filter}((status='pending' AND available_at<=?) "
+                    "OR (status='delivering' AND claim_expires_at<=?)) "
+                    "ORDER BY created_at, message_id LIMIT 1",
+                    parameters,
+                ).fetchone()
+                if row is None:
+                    return None
+                current = self._outbox_from_payload(row["payload"])
+                if (
+                    current.status == OutboxStatus.DELIVERING
+                    and current.attempt_count >= current.max_attempts
+                ):
+                    exhausted = current.expire(now=now)
+                    self.connection.execute(
+                        "UPDATE outbox_messages SET status=?, "
+                        "claim_expires_at=?, payload=? "
+                        "WHERE message_id=? AND status='delivering' "
+                        "AND delivery_token=?",
+                        (
+                            exhausted.status.value,
+                            exhausted.claim_expires_at,
+                            _dump(asdict(exhausted)),
+                            exhausted.message_id,
+                            current.delivery_token,
+                        ),
+                    )
+                    continue
+                break
+            claimed = current.claim(
+                worker_id, now=now, lease_seconds=lease_seconds
+            )
+            cursor = self.connection.execute(
+                "UPDATE outbox_messages SET status=?, available_at=?, "
+                "claim_expires_at=?, delivery_token=?, payload=? "
+                "WHERE message_id=? AND status=? AND delivery_token=?",
+                (
+                    claimed.status.value,
+                    claimed.available_at,
+                    claimed.claim_expires_at,
+                    claimed.delivery_token,
+                    _dump(asdict(claimed)),
+                    claimed.message_id,
+                    current.status.value,
+                    current.delivery_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("outbox delivery ownership is stale")
+        return claimed
+
+    def renew_outbox(
+        self,
+        message_id: str,
+        worker_id: str,
+        delivery_token: int,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage:
+        with self._immediate_transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM outbox_messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("outbox message not found")
+            current = self._outbox_from_payload(row["payload"])
+            renewed = current.renew(
+                worker_id,
+                delivery_token,
+                now=now,
+                lease_seconds=lease_seconds,
+            )
+            cursor = self.connection.execute(
+                "UPDATE outbox_messages SET claim_expires_at=?, payload=? "
+                "WHERE message_id=? AND status='delivering' "
+                "AND delivery_token=? "
+                "AND json_extract(payload, '$.claimed_by')=?",
+                (
+                    renewed.claim_expires_at,
+                    _dump(asdict(renewed)),
+                    message_id,
+                    delivery_token,
+                    worker_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("outbox delivery ownership is stale")
+        return renewed
+
+    def complete_outbox(
+        self,
+        message_id: str,
+        worker_id: str,
+        delivery_token: int,
+        *,
+        now: str,
+        error: str = "",
+        retry_seconds: int = 0,
+    ) -> OutboxMessage:
+        with self._immediate_transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM outbox_messages WHERE message_id=?",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("outbox message not found")
+            current = self._outbox_from_payload(row["payload"])
+            updated = (
+                current.fail(
+                    worker_id,
+                    delivery_token,
+                    now=now,
+                    error=error,
+                    retry_seconds=retry_seconds,
+                )
+                if error
+                else current.deliver(worker_id, delivery_token, now=now)
+            )
+            cursor = self.connection.execute(
+                "UPDATE outbox_messages SET status=?, available_at=?, "
+                "claim_expires_at=?, delivery_token=?, payload=? "
+                "WHERE message_id=? AND status='delivering' "
+                "AND delivery_token=?",
+                (
+                    updated.status.value,
+                    updated.available_at,
+                    updated.claim_expires_at,
+                    updated.delivery_token,
+                    _dump(asdict(updated)),
+                    message_id,
+                    delivery_token,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("outbox delivery ownership is stale")
+        return updated
+
+    def list_outbox(
+        self,
+        *,
+        status: OutboxStatus | None = None,
+        limit: int | None = None,
+    ) -> list[OutboxMessage]:
+        if limit is not None and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 10_000
+        ):
+            raise ValueError("outbox list limit must be between 1 and 10000")
+        query = "SELECT payload FROM outbox_messages"
+        parameters: list[Any] = []
+        if status is not None:
+            query += " WHERE status=?"
+            parameters.append(OutboxStatus(status).value)
+        query += " ORDER BY created_at, message_id"
+        if limit is not None:
+            query += " LIMIT ?"
+            parameters.append(limit)
+        rows = self.connection.execute(query, parameters).fetchall()
+        return [self._outbox_from_payload(row["payload"]) for row in rows]
+
+    def purge_outbox(self, *, before: str, limit: int) -> int:
+        cutoff = parse_utc(before).isoformat()
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 10_000
+        ):
+            raise ValueError("outbox purge limit must be between 1 and 10000")
+        with self._immediate_transaction():
+            cursor = self.connection.execute(
+                """DELETE FROM outbox_messages WHERE message_id IN (
+                       SELECT message_id FROM outbox_messages
+                       WHERE status IN ('delivered', 'failed')
+                         AND json_extract(payload, '$.updated_at')<?
+                       ORDER BY created_at, message_id LIMIT ?
+                   )""",
+                (cutoff, limit),
+            )
+        return cursor.rowcount
 
     def register_worker(self, session: WorkerSession) -> WorkerSession:
         with self._immediate_transaction():
@@ -863,6 +1170,7 @@ class SQLiteRepository:
         review: Review,
         performance: PerformanceRecord,
         events: Sequence[Event],
+        outbox_messages: Sequence[OutboxMessage] = (),
         *,
         now: str,
     ) -> TaskClaim:
@@ -985,6 +1293,8 @@ class SQLiteRepository:
                     "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
                     (event.event_id, event.goal_id, _dump(asdict(event))),
                 )
+            for message in outbox_messages:
+                self._enqueue_outbox_locked(message)
             self.connection.execute(
                 "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
                 (_dump(asdict(task)), task.goal_id, task.task_id),

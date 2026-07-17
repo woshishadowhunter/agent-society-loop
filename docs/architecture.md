@@ -20,6 +20,8 @@ Agent Society Loop is an auditable orchestration runtime. Its job is to make pla
 | `deterministic.py` | Reproducible planner, specialists, and criteria reviewer |
 | `providers.py` | OpenAI-compatible HTTP boundary |
 | `model_agents.py` | Strict JSON planner, worker, and reviewer adapters |
+| `http_transport.py` | No-redirect bounded HTTP with wall-clock response deadlines |
+| `model_runtime.py` | Secret-free provider/agent configuration and compatibility doctor |
 | `tools.py` | Tool discovery, schema validation, policy, and approval enforcement |
 | `mcp.py` | Bounded MCP stdio transport, tool discovery, and local risk adaptation |
 | `a2a.py` | Pinned Agent Cards, bounded A2A HTTP, durable delegation, and remote workers |
@@ -27,6 +29,8 @@ Agent Society Loop is an auditable orchestration runtime. Its job is to make pla
 | `a2a_reliability.py` | Socket-free deterministic A2A fault campaign |
 | `evaluation.py` | Immutable benchmark evaluation and champion/challenger gates |
 | `tracing.py` | Linked, timed, redacted execution spans |
+| `outbox.py` | Lease-owned, idempotency-keyed external side-effect delivery |
+| `operations.py` | Bounded health and metrics snapshots |
 | `github.py` | Bounded read-only GitHub issue retrieval |
 | `workspace_tools.py` | Bounded inspection, content-addressed writes, recovery, and named checks |
 | `publication.py` | Verification-gated, resumable Git commit, push, and pull-request publication |
@@ -103,6 +107,7 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Governance memory: canonical policy digests, task-type activations, imported conformance attestations, and immutable per-attempt ALLOW/DENY decisions.
 - Scheduler memory: worker sessions, claim history, lease deadlines, and monotonic task-local fencing tokens.
 - Approval memory: pending and resolved guarded tool requests plus linked lifecycle traces.
+- Outbox memory: idempotent side-effect intents, attempts, delivery ownership, monotonic tokens, and terminal evidence.
 
 SQLite stores structured values as JSON payloads beside indexed identity and ordering columns. PostgreSQL uses JSONB payloads plus normalized scheduler columns for row locking, ready-task ordering, status, lease expiry, and fencing. A run has one persistence authority; the runtime does not split claims and outcomes across backends.
 
@@ -138,12 +143,16 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - Claim acquisition serializes through a short transaction that revalidates worker session, running goal, pending task, and succeeded dependencies.
 - One partial unique index permits at most one active claim per task; every replacement receives a larger fencing token.
 - Outcome commits revalidate exact live ownership and atomically persist artifact, review, attempt, performance, events, final task state, and terminal claim state.
+- A passing `WorkerExecution` can include outbox intents; outcome evidence, task/goal state, claim completion, and those intents commit in one transaction. Failed review never publishes its intents.
+- Outbox dispatchers bind one explicit topic, maintain the delivery lease on an independent database connection, and use a monotonic token. Expired delivery may be reclaimed, while stale completion is rejected.
+- Webhook dispatch sends an idempotency key and delivery token, rejects redirects and URL credentials, defaults to HTTPS, and can run continuously with graceful signal handling.
+- Model and webhook HTTP responses have byte ceilings and wall-clock deadlines, including protection from peers that keep a connection alive with slow-drip data.
 - Worker approval pauses atomically persist the request, release ownership, restore the task to pending, pause the goal, and consume no attempt; approval resumes the goal transactionally.
 - Expired local work returns to pending, while ambiguous or interrupted remote work blocks rather than replaying an unsafe side effect.
 - SQLite WAL scheduler guarantees apply only to processes on one host; PostgreSQL uses row locking with `SKIP LOCKED` for multi-host discovery.
-- PostgreSQL v0.9 covers execution-plane state only; A2A governance, evaluation, publication, and maintenance remain SQLite-only.
-- Explicit trusted UTC timestamps drive lease decisions, so production workers require clock synchronization.
-- External side effects remain outside both fencing boundaries and require adapter-level idempotency or a remotely enforced epoch.
+- PostgreSQL v0.10 covers execution-plane and outbox state only; A2A governance, evaluation, publication, and maintenance remain SQLite-only.
+- Production worker sessions and claims use the selected database as their time authority; explicit timestamps remain available for deterministic tests and operator recovery.
+- Transactional outbox intents share the outcome transaction, but an external receiver must enforce the supplied idempotency key. Direct model, tool, HTTP, and filesystem side effects remain outside repository fencing.
 - The synchronous engine fails closed when a goal has an active scheduler claim, so legacy interruption recovery cannot bypass lease ownership.
 
 ## Scheduler claim state machine

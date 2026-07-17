@@ -10,13 +10,14 @@ from agent_society_loop.domain import (
     ApprovalRequest,
     Goal,
     GoalStatus,
+    OutboxMessage,
     Review,
     Task,
     TaskStatus,
     Verdict,
 )
 from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.ports import WorkerBlocked
+from agent_society_loop.ports import WorkerBlocked, WorkerExecution
 from agent_society_loop.scheduler import WorkerSession
 from agent_society_loop.tools import ApprovalRequired
 from agent_society_loop.worker_service import (
@@ -125,6 +126,15 @@ class StopAfterWorker(StaticWorker):
         return super().execute(task, context)
 
 
+class OutboxWorker(StaticWorker):
+    def __init__(self, message):
+        super().__init__()
+        self.message = message
+
+    def execute(self, task, context):
+        return WorkerExecution(self.output, (self.message,))
+
+
 class WorkerServiceTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -177,6 +187,75 @@ class WorkerServiceTests(unittest.TestCase):
         self.assertEqual(len(self.repository.list_reviews("queued", "task")), 1)
         self.assertEqual(len(self.repository.list_attempts("queued", "task")), 1)
         self.assertEqual(len(self.worker.calls), 1)
+
+    def test_default_clock_uses_repository_authoritative_time(self):
+        calls = []
+
+        def scheduler_now():
+            calls.append(True)
+            return AT
+
+        self.repository.scheduler_now = scheduler_now
+        service = WorkerService(
+            repository=self.repository,
+            repository_factory=lambda: SQLiteRepository(self.path),
+            workers={"agent-a": self.worker},
+            assignments={"analysis": "agent-a"},
+            reviewer=PassingReviewer(),
+            config=WorkerServiceConfig(
+                worker_id="worker-a",
+                session_id="session-a",
+                heartbeat_ttl_seconds=60,
+                lease_seconds=30,
+                renew_interval_seconds=10,
+                poll_interval_seconds=0.01,
+            ),
+        )
+
+        result = service.run_once()
+
+        self.assertEqual(result.status, WorkerRunStatus.COMMITTED)
+        self.assertGreaterEqual(len(calls), 3)
+
+    def test_worker_outbox_intents_commit_atomically_with_outcome(self):
+        message = OutboxMessage.create(
+            "webhook", "queued:task:notify", {"event": "task.completed"}, now=AT
+        )
+
+        result = self.build_service(worker=OutboxWorker(message)).run_once()
+
+        self.assertEqual(result.status, WorkerRunStatus.COMMITTED)
+        self.assertEqual(self.repository.list_outbox(), [message])
+        self.assertEqual(len(self.repository.list_artifacts("queued", "task")), 1)
+
+    def test_failed_review_does_not_commit_worker_outbox_intents(self):
+        message = OutboxMessage.create(
+            "webhook", "queued:task:notify", {"event": "task.completed"}, now=AT
+        )
+
+        result = self.build_service(
+            worker=OutboxWorker(message), reviewer=FailingReviewer()
+        ).run_once()
+
+        self.assertEqual(result.task_status, TaskStatus.PENDING)
+        self.assertEqual(self.repository.list_outbox(), [])
+
+    def test_outbox_conflict_rolls_back_complete_claim_outcome(self):
+        existing = OutboxMessage.create(
+            "webhook", "queued:task:notify", {"event": "existing"}, now=AT
+        )
+        self.repository.enqueue_outbox(existing)
+        changed = OutboxMessage.create(
+            "webhook", "queued:task:notify", {"event": "changed"}, now=AT
+        )
+
+        with self.assertRaisesRegex(ValueError, "idempotency payload"):
+            self.build_service(worker=OutboxWorker(changed)).run_once()
+
+        self.assertEqual(self.repository.list_outbox(), [existing])
+        self.assertEqual(self.repository.list_artifacts("queued", "task"), [])
+        self.assertEqual(self.repository.list_reviews("queued", "task"), [])
+        self.assertEqual(self.repository.list_attempts("queued", "task"), [])
 
     def test_failed_review_commits_audit_records_and_schedules_retry(self):
         result = self.build_service(reviewer=FailingReviewer()).run_once()

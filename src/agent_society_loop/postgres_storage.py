@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, is_dataclass, replace
+from datetime import timezone
 from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -20,6 +21,8 @@ from .domain import (
     Goal,
     GoalStatus,
     KnowledgeItem,
+    OutboxMessage,
+    OutboxStatus,
     PerformanceRecord,
     Review,
     Task,
@@ -36,6 +39,7 @@ from .scheduler import (
     TaskClaim,
     WorkerSession,
     WorkerSessionRejected,
+    parse_utc,
 )
 
 
@@ -106,6 +110,12 @@ def _claim(value: Any) -> TaskClaim:
     return TaskClaim(**data)
 
 
+def _outbox(value: Any) -> OutboxMessage:
+    data = _payload(value)
+    data["status"] = OutboxStatus(data["status"])
+    return OutboxMessage(**data)
+
+
 class PostgreSQLRepository:
     """One transactional authority for distributed worker execution state."""
 
@@ -140,6 +150,45 @@ class PostgreSQLRepository:
     def _j(self, value: Any):
         return self._Jsonb(_jsonable(value))
 
+    def scheduler_now(self) -> str:
+        row = self.connection.execute(
+            "SELECT clock_timestamp() AS now"
+        ).fetchone()
+        return row["now"].astimezone(timezone.utc).isoformat()
+
+    def operational_counts(self, now: str) -> dict[str, int]:
+        workers = self.connection.execute(
+            """SELECT COUNT(*) AS total,
+                      COUNT(*) FILTER (WHERE expires_at<=%s) AS expired
+               FROM scheduler_workers""",
+            (now,),
+        ).fetchone()
+        claims = self.connection.execute(
+            """SELECT COUNT(*) AS active,
+                      COUNT(*) FILTER (WHERE expires_at<=%s) AS expired_active
+               FROM task_claims WHERE status='active'""",
+            (now,),
+        ).fetchone()
+        approvals = self.connection.execute(
+            """SELECT COUNT(*) AS pending FROM approvals
+               WHERE payload->>'status'='pending'"""
+        ).fetchone()
+        rows = self.connection.execute(
+            "SELECT status, COUNT(*) AS count FROM outbox_messages GROUP BY status"
+        ).fetchall()
+        outbox = {row["status"]: int(row["count"]) for row in rows}
+        return {
+            "workers_total": int(workers["total"]),
+            "workers_expired": int(workers["expired"]),
+            "claims_active": int(claims["active"]),
+            "claims_expired_active": int(claims["expired_active"]),
+            "approvals_pending": int(approvals["pending"]),
+            "outbox_pending": outbox.get("pending", 0),
+            "outbox_delivering": outbox.get("delivering", 0),
+            "outbox_delivered": outbox.get("delivered", 0),
+            "outbox_failed": outbox.get("failed", 0),
+        }
+
     def _create_schema(self) -> None:
         statements = (
             """CREATE TABLE IF NOT EXISTS goals (
@@ -171,6 +220,8 @@ class PostgreSQLRepository:
                 goal_id TEXT NOT NULL, task_id TEXT NOT NULL, payload JSONB NOT NULL)""",
             """CREATE INDEX IF NOT EXISTS approvals_goal_idx
                 ON approvals(goal_id, approval_id)""",
+            """CREATE INDEX IF NOT EXISTS approvals_status_idx
+                ON approvals ((payload->>'status'))""",
             """CREATE TABLE IF NOT EXISTS trace_spans (
                 sequence BIGSERIAL PRIMARY KEY, span_id TEXT UNIQUE NOT NULL,
                 goal_id TEXT NOT NULL, payload JSONB NOT NULL)""",
@@ -201,6 +252,15 @@ class PostgreSQLRepository:
                 ON task_claims(goal_id, task_id) WHERE status = 'active'""",
             """CREATE INDEX IF NOT EXISTS task_claims_expiry_idx
                 ON task_claims(status, expires_at)""",
+            """CREATE TABLE IF NOT EXISTS outbox_messages (
+                message_id TEXT PRIMARY KEY, topic TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL, status TEXT NOT NULL,
+                available_at TIMESTAMPTZ NOT NULL,
+                claim_expires_at TIMESTAMPTZ,
+                delivery_token BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL,
+                payload JSONB NOT NULL, UNIQUE(topic, idempotency_key))""",
+            """CREATE INDEX IF NOT EXISTS outbox_delivery_idx
+                ON outbox_messages(status, available_at, claim_expires_at, created_at)""",
         )
         with self.connection.transaction():
             for statement in statements:
@@ -215,6 +275,255 @@ class PostgreSQLRepository:
                 self._sql.Identifier(self.schema)
             )
         )
+
+    def _enqueue_outbox_locked(self, message: OutboxMessage) -> OutboxMessage:
+        row = self.connection.execute(
+            """INSERT INTO outbox_messages(
+                   message_id, topic, idempotency_key, status, available_at,
+                   claim_expires_at, delivery_token, created_at, payload)
+               VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s)
+               ON CONFLICT(topic, idempotency_key) DO NOTHING
+               RETURNING payload""",
+            (
+                message.message_id,
+                message.topic,
+                message.idempotency_key,
+                message.status.value,
+                message.available_at,
+                message.delivery_token,
+                message.created_at,
+                self._j(message),
+            ),
+        ).fetchone()
+        if row is not None:
+            return message
+        row = self.connection.execute(
+            """SELECT payload FROM outbox_messages
+               WHERE topic=%s AND idempotency_key=%s FOR UPDATE""",
+            (message.topic, message.idempotency_key),
+        ).fetchone()
+        existing = _outbox(row["payload"])
+        if (
+            existing.payload_digest != message.payload_digest
+            or existing.max_attempts != message.max_attempts
+        ):
+            raise ValueError(
+                "outbox idempotency payload does not match existing message"
+            )
+        return existing
+
+    def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage:
+        with self.connection.transaction():
+            return self._enqueue_outbox_locked(message)
+
+    def claim_outbox(
+        self,
+        worker_id: str,
+        *,
+        topic: str | None = None,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage | None:
+        if topic is not None and not str(topic).strip():
+            raise ValueError("outbox topic must not be empty")
+        topic_filter = "topic=%s AND " if topic is not None else ""
+        parameters = (
+            (str(topic).strip(), now, now)
+            if topic is not None
+            else (now, now)
+        )
+        with self.connection.transaction():
+            while True:
+                row = self.connection.execute(
+                    f"""SELECT payload FROM outbox_messages
+                        WHERE {topic_filter}(
+                            (status='pending' AND available_at<=%s)
+                            OR (status='delivering' AND claim_expires_at<=%s)
+                        )
+                        ORDER BY created_at, message_id
+                        FOR UPDATE SKIP LOCKED LIMIT 1""",
+                    parameters,
+                ).fetchone()
+                if row is None:
+                    return None
+                current = _outbox(row["payload"])
+                if (
+                    current.status == OutboxStatus.DELIVERING
+                    and current.attempt_count >= current.max_attempts
+                ):
+                    exhausted = current.expire(now=now)
+                    self.connection.execute(
+                        """UPDATE outbox_messages
+                           SET status=%s, claim_expires_at=NULL, payload=%s
+                           WHERE message_id=%s AND status='delivering'
+                             AND delivery_token=%s""",
+                        (
+                            exhausted.status.value,
+                            self._j(exhausted),
+                            exhausted.message_id,
+                            current.delivery_token,
+                        ),
+                    )
+                    continue
+                break
+            claimed = current.claim(
+                worker_id, now=now, lease_seconds=lease_seconds
+            )
+            updated = self.connection.execute(
+                """UPDATE outbox_messages
+                   SET status=%s, available_at=%s, claim_expires_at=%s,
+                       delivery_token=%s, payload=%s
+                   WHERE message_id=%s AND status=%s AND delivery_token=%s
+                   RETURNING message_id""",
+                (
+                    claimed.status.value,
+                    claimed.available_at,
+                    claimed.claim_expires_at,
+                    claimed.delivery_token,
+                    self._j(claimed),
+                    claimed.message_id,
+                    current.status.value,
+                    current.delivery_token,
+                ),
+            ).fetchone()
+            if updated is None:
+                raise ValueError("outbox delivery ownership is stale")
+            return claimed
+
+    def renew_outbox(
+        self,
+        message_id: str,
+        worker_id: str,
+        delivery_token: int,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage:
+        with self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM outbox_messages "
+                "WHERE message_id=%s FOR UPDATE",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("outbox message not found")
+            renewed = _outbox(row["payload"]).renew(
+                worker_id,
+                delivery_token,
+                now=now,
+                lease_seconds=lease_seconds,
+            )
+            row = self.connection.execute(
+                """UPDATE outbox_messages SET claim_expires_at=%s, payload=%s
+                   WHERE message_id=%s AND status='delivering'
+                     AND delivery_token=%s
+                     AND payload->>'claimed_by'=%s
+                   RETURNING message_id""",
+                (
+                    renewed.claim_expires_at,
+                    self._j(renewed),
+                    message_id,
+                    delivery_token,
+                    worker_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ValueError("outbox delivery ownership is stale")
+            return renewed
+
+    def complete_outbox(
+        self,
+        message_id: str,
+        worker_id: str,
+        delivery_token: int,
+        *,
+        now: str,
+        error: str = "",
+        retry_seconds: int = 0,
+    ) -> OutboxMessage:
+        with self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM outbox_messages WHERE message_id=%s FOR UPDATE",
+                (message_id,),
+            ).fetchone()
+            if row is None:
+                raise ValueError("outbox message not found")
+            current = _outbox(row["payload"])
+            updated = (
+                current.fail(
+                    worker_id,
+                    delivery_token,
+                    now=now,
+                    error=error,
+                    retry_seconds=retry_seconds,
+                )
+                if error
+                else current.deliver(worker_id, delivery_token, now=now)
+            )
+            row = self.connection.execute(
+                """UPDATE outbox_messages
+                   SET status=%s, available_at=%s, claim_expires_at=%s,
+                       delivery_token=%s, payload=%s
+                   WHERE message_id=%s AND status='delivering'
+                     AND delivery_token=%s
+                   RETURNING message_id""",
+                (
+                    updated.status.value,
+                    updated.available_at,
+                    updated.claim_expires_at or None,
+                    updated.delivery_token,
+                    self._j(updated),
+                    message_id,
+                    delivery_token,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ValueError("outbox delivery ownership is stale")
+            return updated
+
+    def list_outbox(
+        self,
+        *,
+        status: OutboxStatus | None = None,
+        limit: int | None = None,
+    ) -> list[OutboxMessage]:
+        if limit is not None and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 10_000
+        ):
+            raise ValueError("outbox list limit must be between 1 and 10000")
+        query = "SELECT payload FROM outbox_messages"
+        parameters: list[Any] = []
+        if status is not None:
+            query += " WHERE status=%s"
+            parameters.append(OutboxStatus(status).value)
+        query += " ORDER BY created_at, message_id"
+        if limit is not None:
+            query += " LIMIT %s"
+            parameters.append(limit)
+        rows = self.connection.execute(query, parameters).fetchall()
+        return [_outbox(row["payload"]) for row in rows]
+
+    def purge_outbox(self, *, before: str, limit: int) -> int:
+        cutoff = parse_utc(before).isoformat()
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 10_000
+        ):
+            raise ValueError("outbox purge limit must be between 1 and 10000")
+        with self.connection.transaction():
+            cursor = self.connection.execute(
+                """DELETE FROM outbox_messages WHERE message_id IN (
+                       SELECT message_id FROM outbox_messages
+                       WHERE status IN ('delivered', 'failed')
+                         AND (payload->>'updated_at')::timestamptz<%s
+                       ORDER BY created_at, message_id LIMIT %s
+                   )""",
+                (cutoff, limit),
+            )
+        return cursor.rowcount
 
     def save_goal(self, goal: Goal) -> None:
         self.connection.execute(
@@ -807,7 +1116,8 @@ class PostgreSQLRepository:
     def commit_claim_outcome(
         self, claim: TaskClaim, task: Task, artifact: Artifact | None,
         attempt: Attempt, review: Review, performance: PerformanceRecord,
-        events: Sequence[Event], *, now: str
+        events: Sequence[Event], outbox_messages: Sequence[OutboxMessage] = (),
+        *, now: str
     ) -> TaskClaim:
         with self.connection.transaction():
             self._require_worker_locked(claim.worker_id, claim.session_id, now)
@@ -854,6 +1164,8 @@ class PostgreSQLRepository:
                        VALUES (%s, %s, %s, %s)""",
                     (event.event_id, event.goal_id, event.event_type, self._j(event)),
                 )
+            for message in outbox_messages:
+                self._enqueue_outbox_locked(message)
             self.connection.execute(
                 """UPDATE tasks SET status=%s, assigned_agent_id=%s, payload=%s
                    WHERE goal_id=%s AND task_id=%s""",

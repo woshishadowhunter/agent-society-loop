@@ -12,6 +12,7 @@ import sys
 from dataclasses import asdict, is_dataclass
 from enum import Enum
 from pathlib import Path
+from threading import Event as ThreadEvent
 from typing import Any, Sequence
 from uuid import uuid4
 
@@ -37,6 +38,7 @@ from .domain import (
     CandidateIdentity,
     CaseEvaluation,
     Goal,
+    OutboxStatus,
     PolicyActivation,
     PolicyVerdict,
     RunBudget,
@@ -53,6 +55,13 @@ from .maintenance import (
     maintenance_publication_configuration,
 )
 from .memory import MemoryManager
+from .model_runtime import doctor_model_runtime, load_model_runtime
+from .outbox import (
+    OutboxDispatcher,
+    OutboxDispatchStatus,
+    WebhookOutboxHandler,
+)
+from .operations import collect_health, collect_metrics
 from .providers import OpenAICompatibleProvider
 from .postgres_storage import PostgreSQLRepository
 from .selection import PerformanceWeightedSelector
@@ -429,6 +438,9 @@ def _open_repository(args):
             "approvals",
             "approve",
             "reject",
+            "health",
+            "metrics",
+            "outbox",
         }
         if args.command not in supported:
             raise ValueError(
@@ -447,6 +459,61 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run auditable goal-driven societies of specialized agents.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
+
+    model = commands.add_parser("model", help="inspect model runtime compatibility")
+    model_commands = model.add_subparsers(dest="model_command", required=True)
+    model_doctor = model_commands.add_parser(
+        "doctor", help="probe configured OpenAI-compatible providers"
+    )
+    model_doctor.add_argument("config")
+    model_doctor.add_argument("--json", action="store_true")
+
+    outbox = commands.add_parser("outbox", help="inspect and deliver outbox messages")
+    outbox_commands = outbox.add_subparsers(dest="outbox_command", required=True)
+    outbox_list = outbox_commands.add_parser("list", help="list durable outbox messages")
+    outbox_list.add_argument(
+        "--status",
+        choices=[status.value for status in OutboxStatus],
+    )
+    outbox_list.add_argument("--limit", type=int, default=100)
+    outbox_list.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(outbox_list)
+    outbox_list.add_argument("--json", action="store_true")
+    outbox_dispatch = outbox_commands.add_parser(
+        "dispatch", help="deliver one outbox message to a webhook"
+    )
+    outbox_dispatch.add_argument("--worker-id", required=True)
+    outbox_dispatch.add_argument("--topic", default="webhook")
+    outbox_dispatch.add_argument("--webhook-url", required=True)
+    outbox_dispatch.add_argument("--token-env")
+    outbox_dispatch.add_argument("--allow-insecure-localhost", action="store_true")
+    outbox_dispatch.add_argument("--lease", type=int, default=60)
+    outbox_dispatch.add_argument("--retry-seconds", type=int, default=5)
+    outbox_dispatch.add_argument("--timeout", type=float, default=30.0)
+    outbox_dispatch.add_argument("--watch", action="store_true")
+    outbox_dispatch.add_argument("--poll-interval", type=float, default=1.0)
+    outbox_dispatch.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(outbox_dispatch)
+    outbox_dispatch.add_argument("--json", action="store_true")
+    outbox_purge = outbox_commands.add_parser(
+        "purge", help="delete bounded terminal outbox history"
+    )
+    outbox_purge.add_argument("--before", required=True)
+    outbox_purge.add_argument("--limit", type=int, default=1000)
+    outbox_purge.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(outbox_purge)
+    outbox_purge.add_argument("--json", action="store_true")
+
+    for name, help_text in (
+        ("health", "inspect database readiness and degraded runtime state"),
+        ("metrics", "collect bounded operational counters"),
+    ):
+        operations = commands.add_parser(name, help=help_text)
+        operations.add_argument("--db", default="agent-society.db")
+        _add_postgres_options(operations)
+        if name == "health":
+            operations.add_argument("--worker-id")
+        operations.add_argument("--json", action="store_true")
 
     demo = commands.add_parser("demo", help="run the offline quantum mug scenario")
     demo.add_argument("--db", default="agent-society.db")
@@ -475,7 +542,9 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run = worker_commands.add_parser("run", help="claim and execute queued tasks")
     worker_run.add_argument("--worker-id", required=True)
     worker_run.add_argument("--session-id")
-    worker_run.add_argument("--agent-id", dest="agent_ids", action="append", required=True)
+    agent_source = worker_run.add_mutually_exclusive_group(required=True)
+    agent_source.add_argument("--agent-id", dest="agent_ids", action="append")
+    agent_source.add_argument("--model-config")
     limit = worker_run.add_mutually_exclusive_group()
     limit.add_argument("--once", action="store_true")
     limit.add_argument("--max-tasks", type=int)
@@ -758,7 +827,111 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repository = None
     try:
+        if args.command == "model":
+            runtime = load_model_runtime(args.config, os.environ)
+            value = doctor_model_runtime(runtime)
+            _emit(
+                value,
+                args.json,
+                (
+                    f"Model compatibility: {'pass' if value['passed'] else 'fail'} "
+                    f"({len(value['providers'])} providers)"
+                ),
+            )
+            return 0 if value["passed"] else 1
+
         repository = _open_repository(args)
+        if args.command == "health":
+            value = collect_health(
+                repository,
+                worker_id=args.worker_id or "",
+            )
+            _emit(
+                value,
+                args.json,
+                f"Runtime health: {value['status']} (ready={value['ready']})",
+            )
+            return 0 if value["ready"] else 1
+        if args.command == "metrics":
+            value = collect_metrics(repository)
+            _emit(value, args.json, f"{len(value)} operational metrics")
+            return 0
+
+        if args.command == "outbox":
+            if args.outbox_command == "list":
+                value = repository.list_outbox(
+                    status=(
+                        OutboxStatus(args.status)
+                        if args.status is not None
+                        else None
+                    ),
+                    limit=args.limit,
+                )
+                _emit(value, args.json, f"{len(value)} outbox messages")
+                return 0
+            if args.outbox_command == "purge":
+                value = {
+                    "purged": repository.purge_outbox(
+                        before=parse_utc(args.before).isoformat(),
+                        limit=args.limit,
+                    )
+                }
+                _emit(value, args.json, f"Purged {value['purged']} outbox messages")
+                return 0
+            token = ""
+            if args.token_env:
+                token = os.environ.get(args.token_env, "")
+                if not token:
+                    raise ValueError(
+                        f"webhook token environment is missing: {args.token_env}"
+                    )
+            handler = WebhookOutboxHandler(
+                args.webhook_url,
+                bearer_token=token,
+                allow_insecure_localhost=args.allow_insecure_localhost,
+                timeout_seconds=args.timeout,
+            )
+            dispatcher = OutboxDispatcher(
+                repository,
+                args.worker_id,
+                topic=args.topic,
+                lease_seconds=args.lease,
+                retry_seconds=args.retry_seconds,
+                repository_factory=lambda: _open_repository(args),
+            )
+            if args.watch:
+                stop_event = ThreadEvent()
+                previous_handlers = {}
+
+                def request_dispatch_stop(signum, frame):
+                    stop_event.set()
+
+                try:
+                    for signum in (signal.SIGINT, signal.SIGTERM):
+                        previous_handlers[signum] = signal.getsignal(signum)
+                        signal.signal(signum, request_dispatch_stop)
+                    value = dispatcher.run(
+                        handler,
+                        stop_event=stop_event,
+                        poll_interval_seconds=args.poll_interval,
+                    )
+                finally:
+                    for signum, previous in previous_handlers.items():
+                        signal.signal(signum, previous)
+            else:
+                value = dispatcher.run_once(handler)
+            _emit(value, args.json, f"Outbox dispatch: {value.status.value}")
+            return (
+                0
+                if value.status
+                in {
+                    OutboxDispatchStatus.IDLE,
+                    OutboxDispatchStatus.DELIVERED,
+                    OutboxDispatchStatus.STOPPED,
+                }
+                else 1
+            )
+
         if args.command == "demo":
             engine = build_demo_engine(repository)
             goal = repository.get_goal(args.goal_id)
@@ -810,27 +983,50 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if report.status.value == "succeeded" else 1
 
         if args.command == "worker":
-            profiles = {profile.agent_id: profile for profile in repository.list_agents()}
-            assignments: dict[str, str] = {}
-            workers = {}
-            for agent_id in args.agent_ids:
-                profile = profiles.get(agent_id)
-                if profile is None:
-                    raise ValueError(f"agent not found: {agent_id}")
-                if profile.role != "worker" or profile.execution_kind != "local":
-                    raise ValueError(f"agent is not a local worker: {agent_id}")
-                if "*" in profile.task_types:
-                    raise ValueError(
-                        f"worker CLI requires explicit task types: {agent_id}"
-                    )
-                for task_type in profile.task_types:
-                    owner = assignments.get(task_type)
-                    if owner is not None and owner != agent_id:
+            if args.model_config:
+                runtime = load_model_runtime(
+                    args.model_config,
+                    os.environ,
+                    tracer=TraceRecorder(repository),
+                )
+                existing_profiles = {
+                    profile.agent_id: profile for profile in repository.list_agents()
+                }
+                for profile in runtime.profiles:
+                    existing = existing_profiles.get(profile.agent_id)
+                    if existing is not None and existing != profile:
                         raise ValueError(
-                            f"task type {task_type} is assigned to multiple agents"
+                            f"configured model agent identity changed: {profile.agent_id}"
                         )
-                    assignments[task_type] = agent_id
-                workers[agent_id] = SpecWorker(agent_id)
+                    repository.save_agent(profile)
+                assignments = runtime.assignments
+                workers = runtime.workers
+                reviewer = runtime.reviewer
+            else:
+                profiles = {
+                    profile.agent_id: profile for profile in repository.list_agents()
+                }
+                assignments = {}
+                workers = {}
+                for agent_id in args.agent_ids:
+                    profile = profiles.get(agent_id)
+                    if profile is None:
+                        raise ValueError(f"agent not found: {agent_id}")
+                    if profile.role != "worker" or profile.execution_kind != "local":
+                        raise ValueError(f"agent is not a local worker: {agent_id}")
+                    if "*" in profile.task_types:
+                        raise ValueError(
+                            f"worker CLI requires explicit task types: {agent_id}"
+                        )
+                    for task_type in profile.task_types:
+                        owner = assignments.get(task_type)
+                        if owner is not None and owner != agent_id:
+                            raise ValueError(
+                                f"task type {task_type} is assigned to multiple agents"
+                            )
+                        assignments[task_type] = agent_id
+                    workers[agent_id] = SpecWorker(agent_id)
+                reviewer = CriteriaReviewer()
             config = WorkerServiceConfig(
                 worker_id=args.worker_id,
                 session_id=args.session_id or f"session-{uuid4().hex[:16]}",
@@ -844,7 +1040,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repository_factory=lambda: _open_repository(args),
                 workers=workers,
                 assignments=assignments,
-                reviewer=CriteriaReviewer(),
+                reviewer=reviewer,
                 config=config,
             )
             if args.once:

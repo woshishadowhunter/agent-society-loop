@@ -215,6 +215,37 @@ agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --js
 
 worker 生命周期、后端范围、恢复、审批和威胁边界见 [调度安全文档](docs/scheduler.md)。
 
+## 部署本地模型 Worker
+
+v0.10 支持通过严格、无密钥明文的 JSON 配置启动持久模型 Worker。内置示例连接
+OpenAI-compatible 端点；使用前需要修改模型名称和地址：
+
+```bash
+export LOCAL_MODEL_API_KEY="replace-with-a-model-token"
+agent-society model doctor examples/local-model-agents.json --json
+agent-society enqueue examples/goal-spec.json --db society.db --json
+agent-society worker run --worker-id local-model-a \
+  --model-config examples/local-model-agents.json \
+  --max-tasks 3 --db society.db --json
+```
+
+Doctor 要求每个 Provider 返回完全符合要求的 JSON 探测结果。Worker 会注册绑定端点
+和模型的精确身份；已有 Agent ID 的模型身份或任务范围发生变化时会失败关闭，不会静默覆盖。
+
+生产 Worker 的租约时间现在来自所选数据库。事务 Outbox 可以随任务结果原子写入副作用
+意图，以更大的 delivery token 接管过期投递，并向 HTTPS Webhook 发送
+`Idempotency-Key` 和 `X-Agent-Society-Delivery-Token`。
+
+```bash
+agent-society health --db society.db --json
+agent-society metrics --db society.db --json
+agent-society outbox list --status pending --limit 100 --db society.db --json
+agent-society outbox purge --before 2026-06-01T00:00:00Z --db society.db --json
+```
+
+PostgreSQL、Docker Compose、模型配置、Webhook 投递和剩余边界见
+[生产化部署文档](docs/deployment.md)。
+
 ## 常用命令
 
 | 命令 | 用途 |
@@ -223,6 +254,7 @@ worker 生命周期、后端范围、恢复、审批和威胁边界见 [调度�
 | `agent-society run SPEC.json` | 执行 JSON 任务图 |
 | `agent-society enqueue SPEC.json` | 只规划并持久化任务图，不立即执行 |
 | `agent-society worker run ...` | 领取、续租、执行、质检并提交队列任务 |
+| `agent-society model doctor CONFIG` | 探测配置模型的严格 JSON 兼容性 |
 | `agent-society status GOAL_ID` | 查看目标、任务、质检和产物 |
 | `agent-society events GOAL_ID` | 查看有序审计事件 |
 | `agent-society agents` | 查看 Agent 档案和绩效 |
@@ -234,6 +266,11 @@ worker 生命周期、后端范围、恢复、审批和威胁边界见 [调度�
 | `agent-society scheduler claims [--goal-id ID]` | 查看租约与 fencing token 历史 |
 | `agent-society scheduler reap --at UTC` | 显式恢复过期领取 |
 | `agent-society scheduler self-test` | 验证五项本地调度安全不变量 |
+| `agent-society health [--worker-id ID]` | 查看数据库就绪状态及可选的 Worker 存活状态 |
+| `agent-society metrics` | 收集有界运维计数指标 |
+| `agent-society outbox list` | 分页、按状态查看持久副作用意图 |
+| `agent-society outbox dispatch ... [--watch]` | 持续投递指定 topic 的 Webhook |
+| `agent-society outbox purge --before UTC` | 有界清理过期的终态投递记录 |
 | `agent-society a2a inspect-card URL` | 检查 Agent Card 并计算摘要 |
 | `agent-society a2a register ...` | 固定卡片、接口和技能映射 |
 | `agent-society a2a agents` | 查看远端信任记录 |
@@ -274,6 +311,11 @@ provider = OpenAICompatibleProvider(
 
 需要严格 JSON 角色适配时，可以直接使用 `model_agents.py` 中的 `ModelPlanner`、`ModelWorker` 和 `ModelReviewer`。`ModelWorker` 每轮只接受一次结构化工具请求或最终产物，并使用独立的工具步数预算；所有行动都必须经过受策略控制的工具运行时。API Key 只从运行环境读取，不会写入数据库或日志。
 
+持久 Worker 可通过 `--model-config` 加载
+`examples/local-model-agents.json`。Provider 地址和模型 ID 必须显式声明，Bearer
+值只通过配置中指定的环境变量读取。回环模型服务可以不设置认证，非回环端点必须提供密钥。
+非回环端点默认还必须使用 HTTPS；不安全 HTTP 需要在配置中显式启用。
+
 ## “自进化”的准确含义
 
 每次经过质检的执行都会更新 `(agent_id, task_type)` 绩效，包括通过率、平均得分、耗时和近期结果。没有 active deployment 的任务类型继续按这些数据选人；Agent 升级还可以通过不可变 benchmark 比较，并经显式冠军/挑战者门禁晋级。
@@ -282,7 +324,7 @@ provider = OpenAICompatibleProvider(
 
 ## 当前边界
 
-v0.9 已提供持久 worker 服务和支持跨主机任务处理的 PostgreSQL 执行后端，但它还不是完整控制平面。PostgreSQL 负责目标、本地任务、产物、质检、attempt、绩效、事件、worker、claim、审批和 trace；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。租约判断使用可信 worker 显式提供的 UTC 时间，生产主机仍需时钟同步。Fencing 只保护仓库写入，不保证外部 exactly-once；模型、工具、HTTP 与文件系统适配器仍需幂等键或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；消息队列投递、自动扩缩容、租户隔离和 Web 控制台仍是后续工作。
+v0.10 已提供模型配置 Worker、数据库权威租约时间、事务 Outbox、有界健康与指标快照及容器部署文件，但它仍不是完整控制平面。PostgreSQL 负责本地执行平面与 Outbox；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。Worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。Outbox fencing 和幂等请求头不能让外部系统自动获得 exactly-once，接收端必须强制校验幂等键。直接模型、工具、HTTP 与文件系统调用仍需适配器级幂等或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；自动扩缩容、租户隔离、完整 OpenTelemetry 导出和 Web 控制台仍是后续工作。
 
 ## 开发与验证
 
