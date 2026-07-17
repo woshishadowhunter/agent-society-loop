@@ -54,6 +54,31 @@ class WorkerCLITests(unittest.TestCase):
         self.assertTrue(args.once)
         self.assertEqual(args.lease, 30)
 
+    def test_supported_commands_accept_postgres_connection_options(self):
+        args = build_parser().parse_args(
+            [
+                "worker", "run", "--worker-id", "process-a",
+                "--agent-id", "spec-writing", "--once",
+                "--database-url", "postgresql://db/agents",
+                "--postgres-schema", "worker_pool",
+            ]
+        )
+
+        self.assertEqual(args.database_url, "postgresql://db/agents")
+        self.assertEqual(args.postgres_schema, "worker_pool")
+
+    def test_postgres_without_extra_is_a_controlled_cli_error(self):
+        code, output, error = self.run_cli(
+            [
+                "status", "missing", "--database-url", "postgresql://unused",
+                "--json",
+            ]
+        )
+
+        self.assertEqual(code, 2)
+        self.assertEqual(output, "")
+        self.assertIn("postgres extra", error)
+
     def test_enqueue_worker_once_and_status_form_an_offline_process_flow(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

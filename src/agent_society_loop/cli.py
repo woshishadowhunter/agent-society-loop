@@ -54,6 +54,7 @@ from .maintenance import (
 )
 from .memory import MemoryManager
 from .providers import OpenAICompatibleProvider
+from .postgres_storage import PostgreSQLRepository
 from .selection import PerformanceWeightedSelector
 from .scheduler import parse_utc, run_scheduler_self_test
 from .storage import SQLiteRepository
@@ -407,6 +408,28 @@ def _database_protected_paths(database: str, workspace: Path) -> tuple[str, ...]
     return (relative, f"{relative}-shm", f"{relative}-wal")
 
 
+def _add_postgres_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--database-url")
+    parser.add_argument("--postgres-schema", default="agent_society")
+
+
+def _open_repository(args):
+    database_url = getattr(args, "database_url", None) or os.environ.get(
+        "AGENT_SOCIETY_DATABASE_URL", ""
+    )
+    if database_url:
+        supported = {"enqueue", "worker", "status", "events", "agents", "scheduler"}
+        if args.command not in supported:
+            raise ValueError(
+                f"PostgreSQL execution backend does not support command: {args.command}"
+            )
+        return PostgreSQLRepository(
+            database_url,
+            schema=getattr(args, "postgres_schema", "agent_society"),
+        )
+    return SQLiteRepository(args.db)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-society",
@@ -433,6 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enqueue.add_argument("spec")
     enqueue.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(enqueue)
     enqueue.add_argument("--json", action="store_true")
 
     worker = commands.add_parser("worker", help="run lease-owned worker processes")
@@ -449,20 +473,24 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run.add_argument("--renew-interval", type=float, default=10.0)
     worker_run.add_argument("--poll-interval", type=float, default=1.0)
     worker_run.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(worker_run)
     worker_run.add_argument("--json", action="store_true")
 
     status = commands.add_parser("status", help="inspect goal state and artifacts")
     status.add_argument("goal_id")
     status.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(status)
     status.add_argument("--json", action="store_true")
 
     events = commands.add_parser("events", help="inspect an ordered audit trail")
     events.add_argument("goal_id")
     events.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(events)
     events.add_argument("--json", action="store_true")
 
     agents = commands.add_parser("agents", help="inspect agents and social memory")
     agents.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(agents)
     agents.add_argument("--json", action="store_true")
 
     evaluate = commands.add_parser(
@@ -504,6 +532,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scheduler_workers.add_argument("--at")
     scheduler_workers.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(scheduler_workers)
     scheduler_workers.add_argument("--json", action="store_true")
     scheduler_claims = scheduler_commands.add_parser(
         "claims", help="list task claim history"
@@ -511,12 +540,14 @@ def build_parser() -> argparse.ArgumentParser:
     scheduler_claims.add_argument("--goal-id")
     scheduler_claims.add_argument("--at")
     scheduler_claims.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(scheduler_claims)
     scheduler_claims.add_argument("--json", action="store_true")
     scheduler_reap = scheduler_commands.add_parser(
         "reap", help="recover task claims expired at an explicit UTC time"
     )
     scheduler_reap.add_argument("--at", required=True)
     scheduler_reap.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(scheduler_reap)
     scheduler_reap.add_argument("--json", action="store_true")
     scheduler_self_test = scheduler_commands.add_parser(
         "self-test", help="run the deterministic scheduler safety campaign"
@@ -711,8 +742,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    repository = SQLiteRepository(args.db)
+    repository = None
     try:
+        repository = _open_repository(args)
         if args.command == "demo":
             engine = build_demo_engine(repository)
             goal = repository.get_goal(args.goal_id)
@@ -795,7 +827,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             service = WorkerService(
                 repository=repository,
-                repository_factory=lambda: SQLiteRepository(args.db),
+                repository_factory=lambda: _open_repository(args),
                 workers=workers,
                 assignments=assignments,
                 reviewer=CriteriaReviewer(),
@@ -1250,4 +1282,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {message}", file=sys.stderr)
         return 2
     finally:
-        repository.close()
+        if repository is not None:
+            repository.close()
