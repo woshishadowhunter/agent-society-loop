@@ -67,6 +67,25 @@ class WorkerCLITests(unittest.TestCase):
         self.assertEqual(args.database_url, "postgresql://db/agents")
         self.assertEqual(args.postgres_schema, "worker_pool")
 
+        for command in (
+            ["traces", "goal-a"],
+            ["approvals", "goal-a"],
+            ["approve", "approval-a", "--by", "operator"],
+            ["reject", "approval-a", "--by", "operator"],
+        ):
+            with self.subTest(command=command[0]):
+                parsed = build_parser().parse_args(
+                    [
+                        *command,
+                        "--database-url",
+                        "postgresql://db/agents",
+                        "--postgres-schema",
+                        "worker_pool",
+                    ]
+                )
+                self.assertEqual(parsed.database_url, "postgresql://db/agents")
+                self.assertEqual(parsed.postgres_schema, "worker_pool")
+
     def test_postgres_without_extra_is_a_controlled_cli_error(self):
         code, output, error = self.run_cli(
             [
