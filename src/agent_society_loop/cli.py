@@ -418,7 +418,18 @@ def _open_repository(args):
         "AGENT_SOCIETY_DATABASE_URL", ""
     )
     if database_url:
-        supported = {"enqueue", "worker", "status", "events", "agents", "scheduler"}
+        supported = {
+            "enqueue",
+            "worker",
+            "status",
+            "events",
+            "agents",
+            "scheduler",
+            "traces",
+            "approvals",
+            "approve",
+            "reject",
+        }
         if args.command not in supported:
             raise ValueError(
                 f"PostgreSQL execution backend does not support command: {args.command}"
@@ -709,11 +720,13 @@ def build_parser() -> argparse.ArgumentParser:
     traces = commands.add_parser("traces", help="inspect linked execution spans")
     traces.add_argument("goal_id")
     traces.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(traces)
     traces.add_argument("--json", action="store_true")
 
     approvals = commands.add_parser("approvals", help="inspect durable approvals")
     approvals.add_argument("goal_id")
     approvals.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(approvals)
     approvals.add_argument("--json", action="store_true")
 
     for name in ("approve", "reject"):
@@ -721,6 +734,7 @@ def build_parser() -> argparse.ArgumentParser:
         decision.add_argument("approval_id")
         decision.add_argument("--by", required=True)
         decision.add_argument("--db", default="agent-society.db")
+        _add_postgres_options(decision)
         decision.add_argument("--json", action="store_true")
 
     knowledge = commands.add_parser("knowledge", help="manage long-term knowledge")

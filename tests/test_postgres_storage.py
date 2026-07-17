@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from agent_society_loop.postgres_storage import PostgreSQLRepository
 from tests.scheduler_conformance import (
+    ApprovalPauseContract,
     ClaimNextTaskContract,
     OwnershipConformanceContract,
     OutcomeReconciliationContract,
@@ -36,6 +37,12 @@ class PostgreSQLContractBase:
 
 class PostgreSQLClaimNextTaskTests(
     PostgreSQLContractBase, ClaimNextTaskContract, unittest.TestCase
+):
+    pass
+
+
+class PostgreSQLApprovalPauseTests(
+    PostgreSQLContractBase, ApprovalPauseContract, unittest.TestCase
 ):
     pass
 

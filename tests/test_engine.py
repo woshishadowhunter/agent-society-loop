@@ -205,6 +205,9 @@ class LoopEngineTests(unittest.TestCase):
         resolved = engine.resolve_approval(
             approval.approval_id, approved=True, decided_by="operator"
         )
+        self.assertEqual(
+            self.repository.get_goal(goal.goal_id).status, GoalStatus.RUNNING
+        )
         completed = engine.resume(goal.goal_id)
 
         self.assertEqual(resolved.status, ApprovalStatus.APPROVED)

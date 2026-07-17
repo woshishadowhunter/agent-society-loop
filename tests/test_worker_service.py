@@ -3,13 +3,22 @@ import time
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from threading import Event as ThreadEvent
+from threading import Event as ThreadEvent, enumerate as enumerate_threads
 from pathlib import Path
 
-from agent_society_loop.domain import Goal, GoalStatus, Review, Task, TaskStatus, Verdict
+from agent_society_loop.domain import (
+    ApprovalRequest,
+    Goal,
+    GoalStatus,
+    Review,
+    Task,
+    TaskStatus,
+    Verdict,
+)
 from agent_society_loop.storage import SQLiteRepository
 from agent_society_loop.ports import WorkerBlocked
 from agent_society_loop.scheduler import WorkerSession
+from agent_society_loop.tools import ApprovalRequired
 from agent_society_loop.worker_service import (
     WorkerRunStatus,
     WorkerService,
@@ -62,6 +71,19 @@ class BlockedWorker(StaticWorker):
         raise WorkerBlocked(
             "remote outcome is ambiguous",
             {"delegation_id": "delegation-a", "status": "unknown"},
+        )
+
+
+class ApprovalWorker(StaticWorker):
+    def execute(self, task, context):
+        raise ApprovalRequired(
+            ApprovalRequest.create(
+                task.goal_id,
+                task.task_id,
+                "write_file",
+                {"path": "candidate.txt"},
+                "write tool requires approval",
+            )
         )
 
 
@@ -242,6 +264,42 @@ class WorkerServiceTests(unittest.TestCase):
         self.assertEqual(self.repository.list_reviews("queued", "task"), [])
         self.assertEqual(self.repository.list_attempts("queued", "task"), [])
         self.assertEqual(self.repository.list_tasks("queued")[0].status, TaskStatus.RUNNING)
+
+    def test_approval_pauses_without_consuming_an_attempt(self):
+        result = self.build_service(worker=ApprovalWorker()).run_once()
+
+        self.assertEqual(result.status, WorkerRunStatus.PAUSED)
+        self.assertEqual(result.task_status, TaskStatus.PENDING)
+        self.assertEqual(self.repository.get_goal("queued").status, GoalStatus.PAUSED)
+        self.assertEqual(self.repository.list_tasks("queued")[0].status, TaskStatus.PENDING)
+        self.assertEqual(self.repository.list_claims("queued")[0].status.value, "released")
+        self.assertEqual(len(self.repository.list_approvals("queued")), 1)
+        self.assertEqual(self.repository.list_artifacts("queued", "task"), [])
+        self.assertEqual(self.repository.list_reviews("queued", "task"), [])
+        self.assertEqual(self.repository.list_attempts("queued", "task"), [])
+
+    def test_outcome_construction_error_stops_the_lease_thread(self):
+        service = self.build_service()
+        original_memory = service.memory
+
+        class ExplodingMemory:
+            def build_context(self, goal, task):
+                return original_memory.build_context(goal, task)
+
+            def calculate_outcome(self, *args, **kwargs):
+                raise RuntimeError("outcome construction failed")
+
+        service.memory = ExplodingMemory()
+
+        with self.assertRaisesRegex(RuntimeError, "outcome construction failed"):
+            service.run_once()
+
+        self.assertFalse(
+            any(
+                thread.is_alive() and thread.name.startswith("lease-")
+                for thread in enumerate_threads()
+            )
+        )
 
     def test_run_respects_max_tasks_without_claiming_more_work(self):
         self.repository.save_task(

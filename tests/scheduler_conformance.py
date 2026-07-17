@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 
 from agent_society_loop.domain import (
+    ApprovalRequest,
+    ApprovalStatus,
     Artifact,
     Attempt,
     Event,
@@ -16,6 +18,7 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
+from agent_society_loop.engine import resolve_approval
 from agent_society_loop.scheduler import (
     ClaimStatus,
     StaleClaim,
@@ -25,6 +28,87 @@ from agent_society_loop.scheduler import (
 
 
 AT = "2026-07-16T00:00:00+00:00"
+
+
+class ApprovalPauseContract:
+    """Approval pauses must release ownership and goal state atomically."""
+
+    first: object
+
+    def test_claim_pause_persists_approval_and_releases_work(self) -> None:
+        goal = replace(
+            Goal.create("Approval", "Pause safely", goal_id="approval"),
+            status=GoalStatus.RUNNING,
+        )
+        task = Task.create("approval", "task", "analysis", "Use a guarded tool")
+        self.first.save_goal(goal)
+        self.first.save_task(task)
+        self.first.register_worker(
+            WorkerSession.create(
+                "worker-p",
+                "session-p",
+                ("analysis",),
+                now=AT,
+                ttl_seconds=60,
+            )
+        )
+        claim = self.first.claim_task(
+            "approval",
+            "task",
+            "worker-p",
+            "session-p",
+            "agent-p",
+            now=AT,
+            lease_seconds=30,
+        )
+        approval = ApprovalRequest.create(
+            "approval",
+            "task",
+            "write_file",
+            {"path": "candidate.txt"},
+            "write tool requires approval",
+        )
+
+        released = self.first.pause_claim_for_approval(
+            claim,
+            approval,
+            now="2026-07-16T00:00:01+00:00",
+        )
+
+        self.assertEqual(released.status, ClaimStatus.RELEASED)
+        self.assertEqual(self.first.get_goal("approval").status, GoalStatus.PAUSED)
+        durable_task = self.first.list_tasks("approval")[0]
+        self.assertEqual(durable_task.status, TaskStatus.PENDING)
+        self.assertIsNone(durable_task.assigned_agent_id)
+        self.assertEqual(self.first.get_approval(approval.approval_id), approval)
+        self.assertIn(
+            "approval.requested",
+            [event.event_type for event in self.first.list_events("approval")],
+        )
+
+        resolved = resolve_approval(
+            self.first,
+            approval.approval_id,
+            approved=True,
+            decided_by="operator",
+        )
+        self.assertEqual(resolved.status, ApprovalStatus.APPROVED)
+        self.assertEqual(self.first.get_goal("approval").status, GoalStatus.RUNNING)
+        self.assertIn(
+            "goal.resumed",
+            [event.event_type for event in self.first.list_events("approval")],
+        )
+        self.assertIn(
+            "approval.approved",
+            [span.name for span in self.first.list_spans("approval")],
+        )
+
+        with self.assertRaises(StaleClaim):
+            self.first.pause_claim_for_approval(
+                claim,
+                approval,
+                now="2026-07-16T00:00:02+00:00",
+            )
 
 
 class ClaimNextTaskContract:

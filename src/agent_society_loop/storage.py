@@ -651,6 +651,110 @@ class SQLiteRepository:
                     )
         return released
 
+    def pause_claim_for_approval(
+        self,
+        claim: TaskClaim,
+        approval: ApprovalRequest,
+        *,
+        now: str,
+    ) -> TaskClaim:
+        """Atomically persist an approval and surrender the claimed task."""
+        with self._immediate_transaction():
+            self._require_worker_session_locked(claim.worker_id, claim.session_id, now)
+            current = self._require_claim_locked(
+                claim.claim_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                now,
+            )
+            if (
+                approval.goal_id != current.goal_id
+                or approval.task_id != current.task_id
+                or approval.status != ApprovalStatus.PENDING
+            ):
+                raise ValueError("approval identity does not match active claim")
+
+            approval_row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if approval_row is not None:
+                data = _load(approval_row["payload"])
+                data["status"] = ApprovalStatus(data["status"])
+                if ApprovalRequest(**data) != approval:
+                    raise ValueError("approval identity cannot change")
+            else:
+                self.connection.execute(
+                    "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (
+                        approval.approval_id,
+                        approval.fingerprint,
+                        approval.goal_id,
+                        approval.task_id,
+                        _dump(asdict(approval)),
+                    ),
+                )
+
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=? AND task_id=?",
+                (current.goal_id, current.task_id),
+            ).fetchone()
+            goal_row = self.connection.execute(
+                "SELECT payload FROM goals WHERE goal_id=?", (current.goal_id,)
+            ).fetchone()
+            if task_row is None or goal_row is None:
+                raise StaleClaim("claimed task or goal no longer exists")
+            task = self._task_from_payload(task_row["payload"])
+            goal_data = _load(goal_row["payload"])
+            goal_data["status"] = GoalStatus(goal_data["status"])
+            goal = Goal(**goal_data)
+            if (
+                task.status != TaskStatus.RUNNING
+                or task.assigned_agent_id != current.agent_id
+                or goal.status != GoalStatus.RUNNING
+            ):
+                raise StaleClaim("claim identity no longer owns running work")
+
+            reason = f"approval required for tool {approval.tool_name}"
+            released = current.finish(ClaimStatus.RELEASED, now=now, reason=reason)
+            pending = replace(task, status=TaskStatus.PENDING, assigned_agent_id=None)
+            paused = transition_goal(goal, GoalStatus.PAUSED, reason)
+            event = Event.create(
+                current.goal_id,
+                "approval.requested",
+                {
+                    "approval_id": approval.approval_id,
+                    "task_id": current.task_id,
+                    "tool_name": approval.tool_name,
+                    "claim_id": current.claim_id,
+                    "fencing_token": current.fencing_token,
+                },
+            )
+            self.connection.execute(
+                "UPDATE task_claims SET status=?, expires_at=?, payload=? WHERE claim_id=?",
+                (
+                    released.status.value,
+                    released.expires_at,
+                    _dump(asdict(released)),
+                    released.claim_id,
+                ),
+            )
+            self.connection.execute(
+                "UPDATE tasks SET payload=? WHERE goal_id=? AND task_id=?",
+                (_dump(asdict(pending)), pending.goal_id, pending.task_id),
+            )
+            self.connection.execute(
+                "UPDATE goals SET payload=? WHERE goal_id=?",
+                (_dump(asdict(paused)), paused.goal_id),
+            )
+            self.connection.execute(
+                "INSERT INTO events(event_id, goal_id, payload) VALUES (?, ?, ?)",
+                (event.event_id, event.goal_id, _dump(asdict(event))),
+            )
+        return released
+
     def get_claim(self, claim_id: str) -> TaskClaim | None:
         row = self.connection.execute(
             "SELECT payload FROM task_claims WHERE claim_id=?", (claim_id,)

@@ -21,11 +21,13 @@ from .domain import (
 from .memory import MemoryManager
 from .ports import Reviewer, Worker, WorkerBlocked
 from .scheduler import StaleClaim, TaskClaim, WorkerSession, WorkerSessionRejected
+from .tools import ApprovalRequired
 
 
 class WorkerRunStatus(str, Enum):
     IDLE = "idle"
     COMMITTED = "committed"
+    PAUSED = "paused"
     LOST = "lost"
     STOPPED = "stopped"
 
@@ -204,100 +206,127 @@ class WorkerService:
             self.repository_factory, claim, self.config, self.clock
         )
         maintainer.start()
-        started = perf_counter()
-        artifact: Artifact | None = None
-        blocked_error: WorkerBlocked | None = None
+        approval_required: ApprovalRequired | None = None
+        outcome = None
         try:
-            content = worker.execute(task, self.memory.build_context(goal, task))
-            artifact = Artifact.create(task.goal_id, task.task_id, claim.agent_id, content)
-            review = self.reviewer.review(task, content, attempt_no)
-        except WorkerBlocked as error:
-            blocked_error = error
-            review = Review.create(
-                task.goal_id,
-                task.task_id,
-                attempt_no,
-                Verdict.FAIL,
-                0,
-                (
-                    Defect(
-                        "execution",
-                        error.reason,
-                        "operator review is required before resuming",
+            started = perf_counter()
+            artifact: Artifact | None = None
+            blocked_error: WorkerBlocked | None = None
+            try:
+                content = worker.execute(task, self.memory.build_context(goal, task))
+                artifact = Artifact.create(
+                    task.goal_id, task.task_id, claim.agent_id, content
+                )
+                review = self.reviewer.review(task, content, attempt_no)
+            except ApprovalRequired as error:
+                approval_required = error
+            except WorkerBlocked as error:
+                blocked_error = error
+                review = Review.create(
+                    task.goal_id,
+                    task.task_id,
+                    attempt_no,
+                    Verdict.FAIL,
+                    0,
+                    (
+                        Defect(
+                            "execution",
+                            error.reason,
+                            "operator review is required before resuming",
+                        ),
                     ),
-                ),
-                error.reason,
-            )
-        except Exception as error:
-            review = Review.create(
-                task.goal_id,
-                task.task_id,
-                attempt_no,
-                Verdict.FAIL,
-                0,
-                (Defect("execution", type(error).__name__, str(error)),),
-                f"Execution failed: {error}",
-            )
-        duration_ms = (perf_counter() - started) * 1000.0
-        passed = (
-            artifact is not None
-            and review.verdict == Verdict.PASS
-            and review.score >= self.config.min_passing_score
-        )
-        resulting_status = (
-            TaskStatus.BLOCKED
-            if blocked_error is not None
-            else TaskStatus.SUCCEEDED
-            if passed
-            else TaskStatus.FAILED
-            if attempt_no >= task.max_attempts
-            else TaskStatus.PENDING
-        )
-        resulting_task = replace(
-            task,
-            status=resulting_status,
-            assigned_agent_id=claim.agent_id if resulting_status != TaskStatus.PENDING else None,
-            artifact_id=artifact.artifact_id if passed and artifact is not None else None,
-        )
-        performance = self.memory.calculate_outcome(
-            claim.agent_id, task.task_type, passed, review.score, duration_ms
-        )
-        attempt = Attempt.create(
-            task.goal_id,
-            task.task_id,
-            claim.agent_id,
-            attempt_no,
-            duration_ms,
-            artifact.artifact_id if artifact is not None else None,
-            review.review_id,
-            review.summary if artifact is None else "",
-        )
-        events = (
-            Event.create(
-                task.goal_id,
-                "task.attempt_completed",
-                {
-                    "task_id": task.task_id,
-                    "attempt_no": attempt_no,
-                    "agent_id": claim.agent_id,
-                    "passed": passed,
-                    "score": review.score,
-                    **(blocked_error.evidence if blocked_error is not None else {}),
-                },
-            ),
-            Event.create(
-                task.goal_id,
-                (
-                    "task.blocked"
+                    error.reason,
+                )
+            except Exception as error:
+                review = Review.create(
+                    task.goal_id,
+                    task.task_id,
+                    attempt_no,
+                    Verdict.FAIL,
+                    0,
+                    (Defect("execution", type(error).__name__, str(error)),),
+                    f"Execution failed: {error}",
+                )
+
+            if approval_required is None:
+                duration_ms = (perf_counter() - started) * 1000.0
+                passed = (
+                    artifact is not None
+                    and review.verdict == Verdict.PASS
+                    and review.score >= self.config.min_passing_score
+                )
+                resulting_status = (
+                    TaskStatus.BLOCKED
                     if blocked_error is not None
-                    else "task.succeeded"
+                    else TaskStatus.SUCCEEDED
                     if passed
-                    else "task.review_failed"
-                ),
-                {"task_id": task.task_id, "attempt_no": attempt_no},
-            ),
-        )
-        maintainer.stop()
+                    else TaskStatus.FAILED
+                    if attempt_no >= task.max_attempts
+                    else TaskStatus.PENDING
+                )
+                resulting_task = replace(
+                    task,
+                    status=resulting_status,
+                    assigned_agent_id=(
+                        claim.agent_id if resulting_status != TaskStatus.PENDING else None
+                    ),
+                    artifact_id=(
+                        artifact.artifact_id if passed and artifact is not None else None
+                    ),
+                )
+                performance = self.memory.calculate_outcome(
+                    claim.agent_id, task.task_type, passed, review.score, duration_ms
+                )
+                attempt = Attempt.create(
+                    task.goal_id,
+                    task.task_id,
+                    claim.agent_id,
+                    attempt_no,
+                    duration_ms,
+                    artifact.artifact_id if artifact is not None else None,
+                    review.review_id,
+                    review.summary if artifact is None else "",
+                )
+                events = (
+                    Event.create(
+                        task.goal_id,
+                        "task.attempt_completed",
+                        {
+                            "task_id": task.task_id,
+                            "attempt_no": attempt_no,
+                            "agent_id": claim.agent_id,
+                            "passed": passed,
+                            "score": review.score,
+                            **(
+                                blocked_error.evidence
+                                if blocked_error is not None
+                                else {}
+                            ),
+                        },
+                    ),
+                    Event.create(
+                        task.goal_id,
+                        (
+                            "task.blocked"
+                            if blocked_error is not None
+                            else "task.succeeded"
+                            if passed
+                            else "task.review_failed"
+                        ),
+                        {"task_id": task.task_id, "attempt_no": attempt_no},
+                    ),
+                )
+                outcome = (
+                    resulting_task,
+                    artifact,
+                    attempt,
+                    review,
+                    performance,
+                    events,
+                    resulting_status,
+                )
+        finally:
+            maintainer.stop()
         if maintainer.lost:
             return self._lost_result(claim, maintainer.reason)
         try:
@@ -316,6 +345,32 @@ class WorkerService:
                 now=now,
                 lease_seconds=self.config.lease_seconds,
             )
+            if approval_required is not None:
+                released = self.repository.pause_claim_for_approval(
+                    claim,
+                    approval_required.approval,
+                    now=self.clock(),
+                )
+                return WorkerRunResult(
+                    WorkerRunStatus.PAUSED,
+                    goal_id=task.goal_id,
+                    task_id=task.task_id,
+                    claim_id=released.claim_id,
+                    fencing_token=released.fencing_token,
+                    task_status=TaskStatus.PENDING,
+                    reason=str(approval_required),
+                )
+            if outcome is None:
+                raise RuntimeError("worker outcome was not constructed")
+            (
+                resulting_task,
+                artifact,
+                attempt,
+                review,
+                performance,
+                events,
+                resulting_status,
+            ) = outcome
             committed: TaskClaim = self.repository.commit_claim_outcome(
                 claim,
                 resulting_task,
@@ -345,7 +400,7 @@ class WorkerService:
         committed = 0
         while not self.stop_event.is_set():
             result = self.run_once()
-            if result.status == WorkerRunStatus.LOST:
+            if result.status in {WorkerRunStatus.LOST, WorkerRunStatus.PAUSED}:
                 return result
             if result.status == WorkerRunStatus.COMMITTED:
                 committed += 1

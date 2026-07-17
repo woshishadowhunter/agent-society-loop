@@ -496,12 +496,23 @@ def resolve_approval(
             event_payload,
         )
     ]
-    failed = None
-    if status == ApprovalStatus.REJECTED:
+    updated_goal = None
+    if status == ApprovalStatus.APPROVED:
+        updated_goal = transition_goal(goal, GoalStatus.RUNNING)
+        events.append(
+            Event.create(
+                updated_goal.goal_id,
+                "goal.resumed",
+                {"approval_id": resolved.approval_id},
+            )
+        )
+    else:
         reason = f"approval rejected for tool {resolved.tool_name}"
-        failed = transition_goal(goal, GoalStatus.FAILED, reason)
-        events.append(Event.create(failed.goal_id, "goal.failed", {"reason": reason}))
-    repository.save_approval_resolution(resolved, events, failed)
+        updated_goal = transition_goal(goal, GoalStatus.FAILED, reason)
+        events.append(
+            Event.create(updated_goal.goal_id, "goal.failed", {"reason": reason})
+        )
+    repository.save_approval_resolution(resolved, events, updated_goal)
     with TraceRecorder(repository).span(
         goal.goal_id,
         f"approval.{status.value}",
@@ -510,12 +521,12 @@ def resolve_approval(
         attributes=event_payload,
     ):
         pass
-    if failed is not None:
+    if status == ApprovalStatus.REJECTED:
         with TraceRecorder(repository).span(
-            failed.goal_id,
+            updated_goal.goal_id,
             "goal.failed",
             kind="lifecycle",
-            attributes={"reason": failed.failure_reason},
+            attributes={"reason": updated_goal.failure_reason},
         ):
             pass
     return resolved

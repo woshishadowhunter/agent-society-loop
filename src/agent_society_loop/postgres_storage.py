@@ -10,6 +10,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .domain import (
     AgentProfile,
+    ApprovalRequest,
+    ApprovalStatus,
     Artifact,
     Attempt,
     Defect,
@@ -22,6 +24,8 @@ from .domain import (
     Review,
     Task,
     TaskStatus,
+    SpanStatus,
+    TraceSpan,
     Verdict,
     transition_goal,
 )
@@ -76,6 +80,18 @@ def _review(value: Any) -> Review:
     data["verdict"] = Verdict(data["verdict"])
     data["defects"] = tuple(Defect(**item) for item in data["defects"])
     return Review(**data)
+
+
+def _approval(value: Any) -> ApprovalRequest:
+    data = _payload(value)
+    data["status"] = ApprovalStatus(data["status"])
+    return ApprovalRequest(**data)
+
+
+def _span(value: Any) -> TraceSpan:
+    data = _payload(value)
+    data["status"] = SpanStatus(data["status"])
+    return TraceSpan(**data)
 
 
 def _worker(value: Any) -> WorkerSession:
@@ -150,6 +166,16 @@ class PostgreSQLRepository:
                 sequence BIGSERIAL PRIMARY KEY, event_id TEXT UNIQUE NOT NULL,
                 goal_id TEXT NOT NULL, event_type TEXT NOT NULL, payload JSONB NOT NULL)""",
             """CREATE INDEX IF NOT EXISTS events_goal_idx ON events(goal_id, sequence)""",
+            """CREATE TABLE IF NOT EXISTS approvals (
+                approval_id TEXT PRIMARY KEY, fingerprint TEXT UNIQUE NOT NULL,
+                goal_id TEXT NOT NULL, task_id TEXT NOT NULL, payload JSONB NOT NULL)""",
+            """CREATE INDEX IF NOT EXISTS approvals_goal_idx
+                ON approvals(goal_id, approval_id)""",
+            """CREATE TABLE IF NOT EXISTS trace_spans (
+                sequence BIGSERIAL PRIMARY KEY, span_id TEXT UNIQUE NOT NULL,
+                goal_id TEXT NOT NULL, payload JSONB NOT NULL)""",
+            """CREATE INDEX IF NOT EXISTS trace_spans_goal_idx
+                ON trace_spans(goal_id, sequence)""",
             """CREATE TABLE IF NOT EXISTS agents (
                 agent_id TEXT PRIMARY KEY, payload JSONB NOT NULL)""",
             """CREATE TABLE IF NOT EXISTS performance (
@@ -616,6 +642,105 @@ class PostgreSQLRepository:
                     )
             return released
 
+    def pause_claim_for_approval(
+        self,
+        claim: TaskClaim,
+        approval: ApprovalRequest,
+        *,
+        now: str,
+    ) -> TaskClaim:
+        """Atomically persist an approval and surrender the claimed task."""
+        with self.connection.transaction():
+            self._require_worker_locked(claim.worker_id, claim.session_id, now)
+            current = self._require_claim_locked(
+                claim.claim_id,
+                claim.worker_id,
+                claim.session_id,
+                claim.fencing_token,
+                now,
+            )
+            if (
+                approval.goal_id != current.goal_id
+                or approval.task_id != current.task_id
+                or approval.status != ApprovalStatus.PENDING
+            ):
+                raise ValueError("approval identity does not match active claim")
+
+            approval_row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=%s FOR UPDATE",
+                (approval.approval_id,),
+            ).fetchone()
+            if approval_row is not None:
+                if _approval(approval_row["payload"]) != approval:
+                    raise ValueError("approval identity cannot change")
+            else:
+                self.connection.execute(
+                    """INSERT INTO approvals(
+                           approval_id, fingerprint, goal_id, task_id, payload
+                       ) VALUES (%s, %s, %s, %s, %s)""",
+                    (
+                        approval.approval_id,
+                        approval.fingerprint,
+                        approval.goal_id,
+                        approval.task_id,
+                        self._j(approval),
+                    ),
+                )
+
+            task_row = self.connection.execute(
+                "SELECT payload FROM tasks WHERE goal_id=%s AND task_id=%s FOR UPDATE",
+                (current.goal_id, current.task_id),
+            ).fetchone()
+            goal_row = self.connection.execute(
+                "SELECT payload FROM goals WHERE goal_id=%s FOR UPDATE",
+                (current.goal_id,),
+            ).fetchone()
+            if task_row is None or goal_row is None:
+                raise StaleClaim("claimed task or goal no longer exists")
+            task = _task(task_row["payload"])
+            goal = _goal(goal_row["payload"])
+            if (
+                task.status != TaskStatus.RUNNING
+                or task.assigned_agent_id != current.agent_id
+                or goal.status != GoalStatus.RUNNING
+            ):
+                raise StaleClaim("claim identity no longer owns running work")
+
+            reason = f"approval required for tool {approval.tool_name}"
+            released = current.finish(ClaimStatus.RELEASED, now=now, reason=reason)
+            pending = replace(task, status=TaskStatus.PENDING, assigned_agent_id=None)
+            paused = transition_goal(goal, GoalStatus.PAUSED, reason)
+            event = Event.create(
+                current.goal_id,
+                "approval.requested",
+                {
+                    "approval_id": approval.approval_id,
+                    "task_id": current.task_id,
+                    "tool_name": approval.tool_name,
+                    "claim_id": current.claim_id,
+                    "fencing_token": current.fencing_token,
+                },
+            )
+            self.connection.execute(
+                "UPDATE task_claims SET status=%s, payload=%s WHERE claim_id=%s",
+                (released.status.value, self._j(released), released.claim_id),
+            )
+            self.connection.execute(
+                """UPDATE tasks SET status=%s, assigned_agent_id=NULL, payload=%s
+                   WHERE goal_id=%s AND task_id=%s""",
+                (pending.status.value, self._j(pending), pending.goal_id, pending.task_id),
+            )
+            self.connection.execute(
+                "UPDATE goals SET status=%s, payload=%s WHERE goal_id=%s",
+                (paused.status.value, self._j(paused), paused.goal_id),
+            )
+            self.connection.execute(
+                """INSERT INTO events(event_id, goal_id, event_type, payload)
+                   VALUES (%s, %s, %s, %s)""",
+                (event.event_id, event.goal_id, event.event_type, self._j(event)),
+            )
+            return released
+
     def get_claim(self, claim_id: str) -> TaskClaim | None:
         row = self.connection.execute(
             "SELECT payload FROM task_claims WHERE claim_id=%s", (claim_id,)
@@ -830,12 +955,86 @@ class PostgreSQLRepository:
             (event.event_id, event.goal_id, event.event_type, self._j(event)),
         )
 
-    # PostgreSQL v0.9 deliberately exposes no partial governance persistence.
-    def list_approvals(self, goal_id: str):
-        return []
+    def save_approval(self, approval: ApprovalRequest) -> None:
+        existing = self.get_approval(approval.approval_id)
+        if existing is not None and existing != approval:
+            raise ValueError("approval identity cannot change")
+        self.connection.execute(
+            """INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload)
+               VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT(approval_id) DO UPDATE SET payload=excluded.payload""",
+            (
+                approval.approval_id,
+                approval.fingerprint,
+                approval.goal_id,
+                approval.task_id,
+                self._j(approval),
+            ),
+        )
 
-    def list_spans(self, goal_id: str):
-        return []
+    def save_approval_resolution(
+        self,
+        approval: ApprovalRequest,
+        events: Iterable[Event],
+        goal: Goal | None = None,
+    ) -> None:
+        with self.connection.transaction():
+            row = self.connection.execute(
+                "UPDATE approvals SET payload=%s WHERE approval_id=%s RETURNING approval_id",
+                (self._j(approval), approval.approval_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"approval not found: {approval.approval_id}")
+            if goal is not None:
+                self.connection.execute(
+                    "UPDATE goals SET status=%s, payload=%s WHERE goal_id=%s",
+                    (goal.status.value, self._j(goal), goal.goal_id),
+                )
+            for event in events:
+                self.connection.execute(
+                    """INSERT INTO events(event_id, goal_id, event_type, payload)
+                       VALUES (%s, %s, %s, %s)""",
+                    (event.event_id, event.goal_id, event.event_type, self._j(event)),
+                )
+
+    def get_approval(self, approval_id: str) -> ApprovalRequest | None:
+        row = self.connection.execute(
+            "SELECT payload FROM approvals WHERE approval_id=%s", (approval_id,)
+        ).fetchone()
+        return None if row is None else _approval(row["payload"])
+
+    def get_approval_by_fingerprint(self, fingerprint: str) -> ApprovalRequest | None:
+        row = self.connection.execute(
+            "SELECT payload FROM approvals WHERE fingerprint=%s", (fingerprint,)
+        ).fetchone()
+        return None if row is None else _approval(row["payload"])
+
+    def list_approvals(self, goal_id: str | None = None) -> list[ApprovalRequest]:
+        query = "SELECT payload FROM approvals"
+        params: tuple[Any, ...] = ()
+        if goal_id is not None:
+            query += " WHERE goal_id=%s"
+            params = (goal_id,)
+        query += " ORDER BY approval_id"
+        rows = self.connection.execute(query, params).fetchall()
+        return [_approval(row["payload"]) for row in rows]
+
+    def save_span(self, span: TraceSpan) -> None:
+        self.connection.execute(
+            """INSERT INTO trace_spans(span_id, goal_id, payload)
+               VALUES (%s, %s, %s)""",
+            (span.span_id, span.goal_id, self._j(span)),
+        )
+
+    def list_spans(self, goal_id: str) -> list[TraceSpan]:
+        rows = self.connection.execute(
+            "SELECT payload FROM trace_spans WHERE goal_id=%s ORDER BY sequence",
+            (goal_id,),
+        ).fetchall()
+        return [_span(row["payload"]) for row in rows]
+
+    # PostgreSQL v0.9 deliberately exposes no partial A2A governance,
+    # evaluation, publication, or maintenance persistence.
 
     def list_workspace_snapshots(self, goal_id: str):
         return []
