@@ -64,6 +64,7 @@ from .outbox import (
 from .operations import collect_health, collect_metrics
 from .providers import OpenAICompatibleProvider
 from .postgres_storage import PostgreSQLRepository
+from .readiness import run_product_readiness_self_test
 from .selection import PerformanceWeightedSelector
 from .scheduler import parse_utc, run_scheduler_self_test
 from .storage import SQLiteRepository
@@ -460,6 +461,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
+    product = commands.add_parser("product", help="inspect product readiness")
+    product_commands = product.add_subparsers(dest="product_command", required=True)
+    product_self_test = product_commands.add_parser(
+        "self-test", help="run install-time product readiness checks"
+    )
+    product_self_test.add_argument("--json", action="store_true")
+
     model = commands.add_parser("model", help="inspect model runtime compatibility")
     model_commands = model.add_subparsers(dest="model_command", required=True)
     model_doctor = model_commands.add_parser(
@@ -827,6 +835,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     repository = None
     try:
+        if args.command == "product":
+            from . import __version__
+
+            if args.product_command == "self-test":
+                value = run_product_readiness_self_test(__version__)
+                _emit(
+                    value,
+                    args.json,
+                    (
+                        "Product readiness: "
+                        f"{'pass' if value['passed'] else 'fail'} "
+                        f"({len(value['checks'])} checks)"
+                    ),
+                )
+                return 0 if value["passed"] else 1
+
         if args.command == "model":
             runtime = load_model_runtime(args.config, os.environ)
             value = doctor_model_runtime(runtime)
@@ -1494,3 +1518,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         if repository is not None:
             repository.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

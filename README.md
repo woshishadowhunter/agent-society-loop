@@ -25,6 +25,7 @@ git clone https://github.com/woshishadowhunter/agent-society-loop.git
 cd agent-society-loop
 python -m pip install -e .
 agent-society demo --db demo.db
+agent-society product self-test --json
 ```
 
 Expected result:
@@ -42,6 +43,8 @@ agent-society agents --db demo.db --json
 ```
 
 The bundled scenario deliberately produces an incomplete first market report. The reviewer rejects it, the defect enters short-term memory, and the specialist repairs the report on its second attempt.
+
+`product self-test` is the v1.0 install-time acceptance command. It verifies release metadata, required operator documentation, the deterministic double-loop demo, scheduler fencing invariants, and local A2A failure-safety scenarios without needing a model API key.
 
 ## Inspect or implement a GitHub issue with real model agents
 
@@ -255,6 +258,7 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | Command | Purpose |
 | --- | --- |
 | `agent-society demo` | Run the offline quantum mug scenario |
+| `agent-society product self-test` | Run install-time v1.0 readiness checks |
 | `agent-society run SPEC.json` | Execute a deterministic JSON task graph |
 | `agent-society enqueue SPEC.json` | Plan and persist a task graph without executing it |
 | `agent-society worker run ...` | Claim, renew, execute, review, and commit queued tasks |
@@ -334,19 +338,25 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.10 provides model-configured workers, database-authoritative worker
-time, a transactional outbox boundary, bounded health and metrics snapshots, and
-container packaging. It is still not a complete control plane: PostgreSQL owns
-the local execution plane and outbox, while A2A governance, evaluation,
-publication, and maintenance workflows remain on the SQLite path and must not
-be split across databases. The worker cannot forcibly cancel an arbitrary
-Python call; shutdown drains the current claim, and lease loss rejects the
-eventual repository commit. Outbox fencing and idempotency headers do not make
-an external system exactly-once; receivers must enforce the idempotency key.
-Direct model, tool, HTTP, and filesystem calls still need adapter-level
-idempotency or a remotely enforced fencing epoch. MCP remains stable stdio only.
-A2A remains outbound `HTTP+JSON` polling only. Autoscaling, tenant isolation, a
-full OpenTelemetry exporter, and a web control plane remain future work.
+Version 1.0 is the first stable product boundary for the CLI/runtime package.
+It includes model-configured workers, database-authoritative worker time, a
+transactional outbox boundary, bounded health and metrics snapshots, container
+packaging, and an install-time product readiness self-test. It is still not a
+complete hosted control plane: PostgreSQL owns the local execution plane and
+outbox, while A2A governance, evaluation, publication, and maintenance workflows
+remain on the SQLite path and must not be split across databases. The worker
+cannot forcibly cancel an arbitrary Python call; shutdown drains the current
+claim, and lease loss rejects the eventual repository commit. Outbox fencing
+and idempotency headers do not make an external system exactly-once; receivers
+must enforce the idempotency key. Direct model, tool, HTTP, and filesystem calls
+still need adapter-level idempotency or a remotely enforced fencing epoch. MCP
+remains stable stdio only. A2A remains outbound `HTTP+JSON` polling only.
+Autoscaling, tenant isolation, a full OpenTelemetry exporter, inbound A2A
+service, and a web control plane remain future work.
+
+For production operation, use [Production-oriented deployment](docs/deployment.md)
+and the [Production runbook](docs/production-runbook.md). For release work, use
+the [v1.0 release checklist](docs/release-checklist.md).
 
 ## Development
 

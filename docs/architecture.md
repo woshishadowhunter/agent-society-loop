@@ -31,6 +31,7 @@ Agent Society Loop is an auditable orchestration runtime. Its job is to make pla
 | `tracing.py` | Linked, timed, redacted execution spans |
 | `outbox.py` | Lease-owned, idempotency-keyed external side-effect delivery |
 | `operations.py` | Bounded health and metrics snapshots |
+| `readiness.py` | Product-level install-time readiness checks |
 | `github.py` | Bounded read-only GitHub issue retrieval |
 | `workspace_tools.py` | Bounded inspection, content-addressed writes, recovery, and named checks |
 | `publication.py` | Verification-gated, resumable Git commit, push, and pull-request publication |
