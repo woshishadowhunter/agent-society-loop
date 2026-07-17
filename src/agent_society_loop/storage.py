@@ -1329,19 +1329,46 @@ class SQLiteRepository:
         return result
 
     def save_approval(self, approval: ApprovalRequest) -> None:
-        self.connection.execute(
-            "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(approval_id) DO UPDATE SET payload=excluded.payload",
-            (
-                approval.approval_id,
-                approval.fingerprint,
-                approval.goal_id,
-                approval.task_id,
-                _dump(asdict(approval)),
-            ),
-        )
-        self.connection.commit()
+        with self._immediate_transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if row is not None:
+                data = _load(row["payload"])
+                data["status"] = ApprovalStatus(data["status"])
+                current = ApprovalRequest(**data)
+                if current == approval:
+                    return
+                if (
+                    current.status != ApprovalStatus.PENDING
+                    or approval.status
+                    not in {ApprovalStatus.APPROVED, ApprovalStatus.REJECTED}
+                    or replace(
+                        approval,
+                        status=current.status,
+                        decided_at=current.decided_at,
+                        decided_by=current.decided_by,
+                    )
+                    != current
+                ):
+                    raise ValueError("approval identity cannot change")
+                self.connection.execute(
+                    "UPDATE approvals SET payload=? WHERE approval_id=?",
+                    (_dump(asdict(approval)), approval.approval_id),
+                )
+                return
+            self.connection.execute(
+                "INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    approval.approval_id,
+                    approval.fingerprint,
+                    approval.goal_id,
+                    approval.task_id,
+                    _dump(asdict(approval)),
+                ),
+            )
 
     def save_approval_resolution(
         self,
@@ -1350,13 +1377,45 @@ class SQLiteRepository:
         goal: Goal | None = None,
     ) -> None:
         """Commit an approval decision, lifecycle state, and audit events atomically."""
-        with self.connection:
-            cursor = self.connection.execute(
+        with self._immediate_transaction():
+            approval_row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=?",
+                (approval.approval_id,),
+            ).fetchone()
+            if approval_row is None:
+                raise KeyError(f"approval not found: {approval.approval_id}")
+            data = _load(approval_row["payload"])
+            data["status"] = ApprovalStatus(data["status"])
+            current = ApprovalRequest(**data)
+            expected_pending = replace(
+                approval,
+                status=ApprovalStatus.PENDING,
+                decided_at="",
+                decided_by="",
+            )
+            if current.status != ApprovalStatus.PENDING:
+                raise ValueError("approval request is already resolved")
+            if current != expected_pending:
+                raise ValueError("approval identity cannot change")
+            if goal is not None:
+                goal_row = self.connection.execute(
+                    "SELECT payload FROM goals WHERE goal_id=?", (goal.goal_id,)
+                ).fetchone()
+                if goal_row is None:
+                    raise KeyError(f"goal not found: {goal.goal_id}")
+                goal_data = _load(goal_row["payload"])
+                goal_data["status"] = GoalStatus(goal_data["status"])
+                current_goal = Goal(**goal_data)
+                if (
+                    current_goal.goal_id != approval.goal_id
+                    or current_goal.status != GoalStatus.PAUSED
+                    or goal.status not in {GoalStatus.RUNNING, GoalStatus.FAILED}
+                ):
+                    raise ValueError("approval goal is no longer paused")
+            self.connection.execute(
                 "UPDATE approvals SET payload=? WHERE approval_id=?",
                 (_dump(asdict(approval)), approval.approval_id),
             )
-            if cursor.rowcount != 1:
-                raise KeyError(f"approval not found: {approval.approval_id}")
             if goal is not None:
                 self.connection.execute(
                     "UPDATE goals SET payload=? WHERE goal_id=?",

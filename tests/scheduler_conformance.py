@@ -17,6 +17,7 @@ from agent_society_loop.domain import (
     Task,
     TaskStatus,
     Verdict,
+    transition_goal,
 )
 from agent_society_loop.engine import resolve_approval
 from agent_society_loop.scheduler import (
@@ -86,6 +87,15 @@ class ApprovalPauseContract:
             [event.event_type for event in self.first.list_events("approval")],
         )
 
+        paused_goal = self.first.get_goal("approval")
+        stale_rejected = approval.resolve(ApprovalStatus.REJECTED, "late-operator")
+        stale_failed = transition_goal(
+            paused_goal, GoalStatus.FAILED, "late rejection must not win"
+        )
+        stale_event = Event.create(
+            "approval", "approval.rejected", {"approval_id": approval.approval_id}
+        )
+
         resolved = resolve_approval(
             self.first,
             approval.approval_id,
@@ -101,6 +111,22 @@ class ApprovalPauseContract:
         self.assertIn(
             "approval.approved",
             [span.name for span in self.first.list_spans("approval")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "already resolved"):
+            self.first.save_approval_resolution(
+                stale_rejected,
+                (stale_event,),
+                stale_failed,
+            )
+        self.assertEqual(
+            self.first.get_approval(approval.approval_id).status,
+            ApprovalStatus.APPROVED,
+        )
+        self.assertEqual(self.first.get_goal("approval").status, GoalStatus.RUNNING)
+        self.assertNotIn(
+            "approval.rejected",
+            [event.event_type for event in self.first.list_events("approval")],
         )
 
         with self.assertRaises(StaleClaim):

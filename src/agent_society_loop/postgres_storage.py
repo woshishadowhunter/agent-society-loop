@@ -956,21 +956,45 @@ class PostgreSQLRepository:
         )
 
     def save_approval(self, approval: ApprovalRequest) -> None:
-        existing = self.get_approval(approval.approval_id)
-        if existing is not None and existing != approval:
-            raise ValueError("approval identity cannot change")
-        self.connection.execute(
-            """INSERT INTO approvals(approval_id, fingerprint, goal_id, task_id, payload)
-               VALUES (%s, %s, %s, %s, %s)
-               ON CONFLICT(approval_id) DO UPDATE SET payload=excluded.payload""",
-            (
-                approval.approval_id,
-                approval.fingerprint,
-                approval.goal_id,
-                approval.task_id,
-                self._j(approval),
-            ),
-        )
+        with self.connection.transaction():
+            row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=%s FOR UPDATE",
+                (approval.approval_id,),
+            ).fetchone()
+            if row is not None:
+                current = _approval(row["payload"])
+                if current == approval:
+                    return
+                if (
+                    current.status != ApprovalStatus.PENDING
+                    or approval.status
+                    not in {ApprovalStatus.APPROVED, ApprovalStatus.REJECTED}
+                    or replace(
+                        approval,
+                        status=current.status,
+                        decided_at=current.decided_at,
+                        decided_by=current.decided_by,
+                    )
+                    != current
+                ):
+                    raise ValueError("approval identity cannot change")
+                self.connection.execute(
+                    "UPDATE approvals SET payload=%s WHERE approval_id=%s",
+                    (self._j(approval), approval.approval_id),
+                )
+                return
+            self.connection.execute(
+                """INSERT INTO approvals(
+                       approval_id, fingerprint, goal_id, task_id, payload
+                   ) VALUES (%s, %s, %s, %s, %s)""",
+                (
+                    approval.approval_id,
+                    approval.fingerprint,
+                    approval.goal_id,
+                    approval.task_id,
+                    self._j(approval),
+                ),
+            )
 
     def save_approval_resolution(
         self,
@@ -979,12 +1003,41 @@ class PostgreSQLRepository:
         goal: Goal | None = None,
     ) -> None:
         with self.connection.transaction():
-            row = self.connection.execute(
-                "UPDATE approvals SET payload=%s WHERE approval_id=%s RETURNING approval_id",
-                (self._j(approval), approval.approval_id),
+            approval_row = self.connection.execute(
+                "SELECT payload FROM approvals WHERE approval_id=%s FOR UPDATE",
+                (approval.approval_id,),
             ).fetchone()
-            if row is None:
+            if approval_row is None:
                 raise KeyError(f"approval not found: {approval.approval_id}")
+            current = _approval(approval_row["payload"])
+            expected_pending = replace(
+                approval,
+                status=ApprovalStatus.PENDING,
+                decided_at="",
+                decided_by="",
+            )
+            if current.status != ApprovalStatus.PENDING:
+                raise ValueError("approval request is already resolved")
+            if current != expected_pending:
+                raise ValueError("approval identity cannot change")
+            if goal is not None:
+                goal_row = self.connection.execute(
+                    "SELECT payload FROM goals WHERE goal_id=%s FOR UPDATE",
+                    (goal.goal_id,),
+                ).fetchone()
+                if goal_row is None:
+                    raise KeyError(f"goal not found: {goal.goal_id}")
+                current_goal = _goal(goal_row["payload"])
+                if (
+                    current_goal.goal_id != approval.goal_id
+                    or current_goal.status != GoalStatus.PAUSED
+                    or goal.status not in {GoalStatus.RUNNING, GoalStatus.FAILED}
+                ):
+                    raise ValueError("approval goal is no longer paused")
+            self.connection.execute(
+                "UPDATE approvals SET payload=%s WHERE approval_id=%s",
+                (self._j(approval), approval.approval_id),
+            )
             if goal is not None:
                 self.connection.execute(
                     "UPDATE goals SET status=%s, payload=%s WHERE goal_id=%s",
