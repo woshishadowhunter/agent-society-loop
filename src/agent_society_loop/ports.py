@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
 from .domain import (
@@ -10,6 +11,8 @@ from .domain import (
     Attempt,
     Event,
     Goal,
+    OutboxMessage,
+    OutboxStatus,
     PerformanceRecord,
     Review,
     Task,
@@ -47,6 +50,12 @@ class WorkerBlocked(RuntimeError):
         super().__init__(self.reason)
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerExecution:
+    content: str
+    outbox_messages: tuple[OutboxMessage, ...] = ()
+
+
 class Planner(Protocol):
     def plan(self, goal: Goal, context: dict[str, Any]) -> Sequence[Task]: ...
 
@@ -54,7 +63,9 @@ class Planner(Protocol):
 class Worker(Protocol):
     agent_id: str
 
-    def execute(self, task: Task, context: dict[str, Any]) -> str: ...
+    def execute(
+        self, task: Task, context: dict[str, Any]
+    ) -> str | WorkerExecution: ...
 
 
 class Reviewer(Protocol):
@@ -70,6 +81,10 @@ class ModelProvider(Protocol):
 @runtime_checkable
 class SchedulerRepository(Protocol):
     """Persistence boundary required by lease-based scheduler workers."""
+
+    def scheduler_now(self) -> str: ...
+
+    def operational_counts(self, now: str) -> dict[str, int]: ...
 
     def register_worker(self, session: WorkerSession) -> WorkerSession: ...
 
@@ -149,6 +164,7 @@ class SchedulerRepository(Protocol):
         review: Review,
         performance: PerformanceRecord,
         events: Sequence[Event],
+        outbox_messages: Sequence[OutboxMessage] = (),
         *,
         now: str,
     ) -> TaskClaim: ...
@@ -156,3 +172,44 @@ class SchedulerRepository(Protocol):
     def get_claim(self, claim_id: str) -> TaskClaim | None: ...
 
     def list_claims(self, goal_id: str | None = None) -> list[TaskClaim]: ...
+
+    def enqueue_outbox(self, message: OutboxMessage) -> OutboxMessage: ...
+
+    def claim_outbox(
+        self,
+        worker_id: str,
+        *,
+        topic: str | None = None,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage | None: ...
+
+    def renew_outbox(
+        self,
+        message_id: str,
+        worker_id: str,
+        delivery_token: int,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage: ...
+
+    def complete_outbox(
+        self,
+        message_id: str,
+        worker_id: str,
+        delivery_token: int,
+        *,
+        now: str,
+        error: str = "",
+        retry_seconds: int = 0,
+    ) -> OutboxMessage: ...
+
+    def list_outbox(
+        self,
+        *,
+        status: OutboxStatus | None = None,
+        limit: int | None = None,
+    ) -> list[OutboxMessage]: ...
+
+    def purge_outbox(self, *, before: str, limit: int) -> int: ...

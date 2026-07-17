@@ -16,10 +16,9 @@ from .domain import (
     Review,
     TaskStatus,
     Verdict,
-    utc_now,
 )
 from .memory import MemoryManager
-from .ports import Reviewer, Worker, WorkerBlocked
+from .ports import Reviewer, Worker, WorkerBlocked, WorkerExecution
 from .scheduler import StaleClaim, TaskClaim, WorkerSession, WorkerSessionRejected
 from .tools import ApprovalRequired
 
@@ -72,7 +71,7 @@ class _LeaseMaintainer:
         repository_factory: Callable[[], object],
         claim: TaskClaim,
         config: WorkerServiceConfig,
-        clock: Callable[[], str],
+        clock: Callable[[], str] | None,
     ):
         self.repository_factory = repository_factory
         self.claim = claim
@@ -107,7 +106,11 @@ class _LeaseMaintainer:
         try:
             repository = self.repository_factory()
             while not self._stop.wait(self.config.renew_interval_seconds):
-                now = self.clock()
+                now = (
+                    self.clock()
+                    if self.clock is not None
+                    else repository.scheduler_now()
+                )
                 repository.heartbeat_worker(
                     self.claim.worker_id,
                     self.claim.session_id,
@@ -144,7 +147,7 @@ class WorkerService:
         assignments: Mapping[str, str],
         reviewer: Reviewer,
         config: WorkerServiceConfig,
-        clock: Callable[[], str] = utc_now,
+        clock: Callable[[], str] | None = None,
         stop_event: ThreadEvent | None = None,
     ):
         self.repository = repository
@@ -162,6 +165,9 @@ class WorkerService:
         missing = set(self.assignments.values()) - set(self.workers)
         if missing:
             raise ValueError(f"worker implementation is missing: {sorted(missing)[0]}")
+
+    def _now(self) -> str:
+        return self.clock() if self.clock is not None else self.repository.scheduler_now()
 
     def _ensure_session(self, now: str) -> WorkerSession:
         if self._session is None:
@@ -183,7 +189,7 @@ class WorkerService:
         return self._session
 
     def run_once(self) -> WorkerRunResult:
-        now = self.clock()
+        now = self._now()
         self._ensure_session(now)
         claimed = self.repository.claim_next_task(
             self.config.worker_id,
@@ -212,8 +218,16 @@ class WorkerService:
             started = perf_counter()
             artifact: Artifact | None = None
             blocked_error: WorkerBlocked | None = None
+            outbox_messages = ()
             try:
-                content = worker.execute(task, self.memory.build_context(goal, task))
+                execution = worker.execute(
+                    task, self.memory.build_context(goal, task)
+                )
+                if isinstance(execution, WorkerExecution):
+                    content = execution.content
+                    outbox_messages = execution.outbox_messages
+                else:
+                    content = execution
                 artifact = Artifact.create(
                     task.goal_id, task.task_id, claim.agent_id, content
                 )
@@ -324,13 +338,14 @@ class WorkerService:
                     performance,
                     events,
                     resulting_status,
+                    outbox_messages if passed else (),
                 )
         finally:
             maintainer.stop()
         if maintainer.lost:
             return self._lost_result(claim, maintainer.reason)
         try:
-            now = self.clock()
+            now = self._now()
             self._session = self.repository.heartbeat_worker(
                 claim.worker_id,
                 claim.session_id,
@@ -349,7 +364,7 @@ class WorkerService:
                 released = self.repository.pause_claim_for_approval(
                     claim,
                     approval_required.approval,
-                    now=self.clock(),
+                    now=self._now(),
                 )
                 return WorkerRunResult(
                     WorkerRunStatus.PAUSED,
@@ -370,6 +385,7 @@ class WorkerService:
                 performance,
                 events,
                 resulting_status,
+                outbox_messages,
             ) = outcome
             committed: TaskClaim = self.repository.commit_claim_outcome(
                 claim,
@@ -379,7 +395,8 @@ class WorkerService:
                 review,
                 performance,
                 events,
-                now=self.clock(),
+                outbox_messages,
+                now=self._now(),
             )
         except (StaleClaim, WorkerSessionRejected) as error:
             return self._lost_result(claim, str(error))

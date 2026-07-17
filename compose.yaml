@@ -1,0 +1,100 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: agent_society
+      POSTGRES_USER: agent_society
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_society -d agent_society"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  worker:
+    build: .
+    profiles: ["worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_SOCIETY_DATABASE_URL: ${AGENT_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
+      LOCAL_MODEL_API_KEY: ${LOCAL_MODEL_API_KEY:?set LOCAL_MODEL_API_KEY}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./examples/local-model-agents.json:/config/model-agents.json:ro
+    command:
+      - worker
+      - run
+      - --worker-id
+      - local-model-worker
+      - --model-config
+      - /config/model-agents.json
+      - --postgres-schema
+      - agent_society
+      - --json
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "agent-society",
+          "health",
+          "--worker-id",
+          "local-model-worker",
+          "--postgres-schema",
+          "agent_society",
+          "--json",
+        ]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    restart: unless-stopped
+
+  dispatcher:
+    build: .
+    profiles: ["dispatcher"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_SOCIETY_DATABASE_URL: ${AGENT_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
+      WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:?set WEBHOOK_TOKEN}
+    command:
+      - outbox
+      - dispatch
+      - --worker-id
+      - webhook-dispatcher
+      - --topic
+      - webhook
+      - --webhook-url
+      - ${WEBHOOK_URL:?set WEBHOOK_URL}
+      - --token-env
+      - WEBHOOK_TOKEN
+      - --watch
+      - --postgres-schema
+      - agent_society
+      - --json
+    restart: unless-stopped
+
+  operator:
+    build: .
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AGENT_SOCIETY_DATABASE_URL: ${AGENT_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
+      LOCAL_MODEL_API_KEY: ${LOCAL_MODEL_API_KEY:?set LOCAL_MODEL_API_KEY}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./examples:/work/examples:ro
+    command: ["health", "--postgres-schema", "agent_society", "--json"]
+
+volumes:
+  postgres-data:

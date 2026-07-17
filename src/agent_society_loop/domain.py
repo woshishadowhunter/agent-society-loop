@@ -7,7 +7,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Iterable, Sequence
 from uuid import uuid4
@@ -98,6 +98,13 @@ class DelegationStatus(str, Enum):
 class PolicyVerdict(str, Enum):
     ALLOW = "ALLOW"
     DENY = "DENY"
+
+
+class OutboxStatus(str, Enum):
+    PENDING = "pending"
+    DELIVERING = "delivering"
+    DELIVERED = "delivered"
+    FAILED = "failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1432,6 +1439,236 @@ class RunReport:
     retries: int
     artifacts: int
     reason: str = ""
+
+
+_OUTBOX_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+_OUTBOX_PAYLOAD_LIMIT = 65_536
+
+
+def _outbox_time(value: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("outbox timestamp must be a UTC ISO-8601 string")
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise ValueError("outbox timestamp must be a UTC ISO-8601 string") from error
+    if parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise ValueError("outbox timestamp must include the UTC offset")
+    return parsed.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxMessage:
+    message_id: str
+    topic: str
+    idempotency_key: str
+    payload: dict[str, Any]
+    status: OutboxStatus = OutboxStatus.PENDING
+    attempt_count: int = 0
+    max_attempts: int = 5
+    delivery_token: int = 0
+    available_at: str = field(default_factory=utc_now)
+    claimed_by: str = ""
+    claimed_at: str = ""
+    claim_expires_at: str = ""
+    delivered_at: str = ""
+    last_error: str = ""
+    created_at: str = field(default_factory=utc_now)
+    updated_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        topic: str,
+        idempotency_key: str,
+        payload: dict[str, Any],
+        *,
+        now: str | None = None,
+        max_attempts: int = 5,
+    ) -> OutboxMessage:
+        topic = str(topic).strip()
+        key = str(idempotency_key).strip()
+        if not _OUTBOX_NAME.fullmatch(topic):
+            raise ValueError("outbox topic must be a safe identifier")
+        if not key or len(key) > 256:
+            raise ValueError("outbox idempotency key must contain 1-256 characters")
+        if not isinstance(payload, dict):
+            raise ValueError("outbox payload must be an object")
+        try:
+            encoded = json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        except (TypeError, ValueError) as error:
+            raise ValueError("outbox payload must be JSON serializable") from error
+        if len(encoded) > _OUTBOX_PAYLOAD_LIMIT:
+            raise ValueError(
+                f"outbox payload exceeds {_OUTBOX_PAYLOAD_LIMIT} bytes"
+            )
+        if (
+            isinstance(max_attempts, bool)
+            or not isinstance(max_attempts, int)
+            or not 1 <= max_attempts <= 100
+        ):
+            raise ValueError("outbox max_attempts must be between 1 and 100")
+        created = now or utc_now()
+        _outbox_time(created)
+        return cls(
+            message_id=f"outbox-{uuid4().hex}",
+            topic=topic,
+            idempotency_key=key,
+            payload=dict(payload),
+            max_attempts=max_attempts,
+            available_at=created,
+            created_at=created,
+            updated_at=created,
+        )
+
+    @property
+    def payload_digest(self) -> str:
+        encoded = json.dumps(
+            self.payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def claim(
+        self,
+        worker_id: str,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage:
+        worker_id = str(worker_id).strip()
+        if not _OUTBOX_NAME.fullmatch(worker_id):
+            raise ValueError("outbox worker ID must be a safe identifier")
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 86_400
+        ):
+            raise ValueError("outbox lease_seconds must be between 1 and 86400")
+        current = _outbox_time(now)
+        pending_ready = (
+            self.status == OutboxStatus.PENDING
+            and current >= _outbox_time(self.available_at)
+        )
+        expired_delivery = (
+            self.status == OutboxStatus.DELIVERING
+            and bool(self.claim_expires_at)
+            and current >= _outbox_time(self.claim_expires_at)
+        )
+        if not pending_ready and not expired_delivery:
+            raise ValueError("outbox message is not available for delivery")
+        expires = (current + timedelta(seconds=lease_seconds)).isoformat()
+        return replace(
+            self,
+            status=OutboxStatus.DELIVERING,
+            attempt_count=self.attempt_count + 1,
+            delivery_token=self.delivery_token + 1,
+            claimed_by=worker_id,
+            claimed_at=current.isoformat(),
+            claim_expires_at=expires,
+            updated_at=current.isoformat(),
+        )
+
+    def _require_delivery(self, worker_id: str, token: int, now: str) -> str:
+        current = _outbox_time(now)
+        if (
+            self.status != OutboxStatus.DELIVERING
+            or self.claimed_by != worker_id
+            or self.delivery_token != token
+            or not self.claim_expires_at
+            or current >= _outbox_time(self.claim_expires_at)
+        ):
+            raise ValueError("outbox delivery ownership is stale")
+        return current.isoformat()
+
+    def deliver(self, worker_id: str, token: int, *, now: str) -> OutboxMessage:
+        completed_at = self._require_delivery(worker_id, token, now)
+        return replace(
+            self,
+            status=OutboxStatus.DELIVERED,
+            delivered_at=completed_at,
+            claim_expires_at="",
+            updated_at=completed_at,
+        )
+
+    def renew(
+        self,
+        worker_id: str,
+        token: int,
+        *,
+        now: str,
+        lease_seconds: int,
+    ) -> OutboxMessage:
+        renewed_at = self._require_delivery(worker_id, token, now)
+        if (
+            isinstance(lease_seconds, bool)
+            or not isinstance(lease_seconds, int)
+            or not 1 <= lease_seconds <= 86_400
+        ):
+            raise ValueError("outbox lease_seconds must be between 1 and 86400")
+        expires = (
+            _outbox_time(renewed_at) + timedelta(seconds=lease_seconds)
+        ).isoformat()
+        return replace(
+            self,
+            claim_expires_at=expires,
+            updated_at=renewed_at,
+        )
+
+    def expire(self, *, now: str) -> OutboxMessage:
+        expired_at = _outbox_time(now)
+        if (
+            self.status != OutboxStatus.DELIVERING
+            or not self.claim_expires_at
+            or expired_at < _outbox_time(self.claim_expires_at)
+            or self.attempt_count < self.max_attempts
+        ):
+            raise ValueError("outbox delivery is not terminally expired")
+        return replace(
+            self,
+            status=OutboxStatus.FAILED,
+            claim_expires_at="",
+            last_error="delivery lease expired at attempt limit",
+            updated_at=expired_at.isoformat(),
+        )
+
+    def fail(
+        self,
+        worker_id: str,
+        token: int,
+        *,
+        now: str,
+        error: str,
+        retry_seconds: int = 0,
+    ) -> OutboxMessage:
+        failed_at = self._require_delivery(worker_id, token, now)
+        if (
+            isinstance(retry_seconds, bool)
+            or not isinstance(retry_seconds, int)
+            or not 0 <= retry_seconds <= 86_400
+        ):
+            raise ValueError("outbox retry_seconds must be between 0 and 86400")
+        reason = " ".join(str(error).split()).strip()[:512]
+        if not reason:
+            raise ValueError("outbox failure reason must not be empty")
+        terminal = self.attempt_count >= self.max_attempts
+        available = (
+            _outbox_time(failed_at) + timedelta(seconds=retry_seconds)
+        ).isoformat()
+        return replace(
+            self,
+            status=OutboxStatus.FAILED if terminal else OutboxStatus.PENDING,
+            available_at=available,
+            claimed_by="",
+            claimed_at="",
+            claim_expires_at="",
+            last_error=reason,
+            updated_at=failed_at,
+        )
 
 
 _GOAL_TRANSITIONS: dict[GoalStatus, frozenset[GoalStatus]] = {

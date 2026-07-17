@@ -1,0 +1,34 @@
+{
+  "providers": {
+    "local": {
+      "base_url": "http://host.docker.internal:11434/v1",
+      "model": "replace-with-local-model",
+      "api_key_env": "LOCAL_MODEL_API_KEY",
+      "allow_insecure_http": true,
+      "timeout_seconds": 120,
+      "structured_output": true
+    }
+  },
+  "agents": [
+    {
+      "agent_id": "local-research",
+      "provider": "local",
+      "task_types": [
+        "research"
+      ],
+      "max_tool_steps": 4
+    },
+    {
+      "agent_id": "local-writing",
+      "provider": "local",
+      "task_types": [
+        "writing"
+      ],
+      "max_tool_steps": 4
+    }
+  ],
+  "reviewer": {
+    "agent_id": "local-reviewer",
+    "provider": "local"
+  }
+}

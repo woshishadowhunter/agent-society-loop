@@ -119,9 +119,14 @@ class ModelReviewer:
         self,
         provider: ModelProvider,
         tracer: TraceRecorder | None = None,
+        *,
+        agent_id: str = "reviewer",
     ):
+        if not agent_id.strip():
+            raise ValueError("reviewer agent_id must not be empty")
         self.provider = provider
         self.tracer = tracer
+        self.agent_id = agent_id.strip()
 
     def review(self, task: Task, artifact: str, attempt_no: int) -> Review:
         messages = [
@@ -156,6 +161,7 @@ class ModelReviewer:
                 task.goal_id,
                 "reviewer.review",
                 task_id=task.task_id,
+                agent_id=self.agent_id,
             )
         )
         _require_keys(

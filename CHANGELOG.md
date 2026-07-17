@@ -2,6 +2,20 @@
 
 All notable changes are documented here.
 
+## 0.10.0 - 2026-07-17
+
+- Added strict, secret-free local model runtime configuration with endpoint-bound model identities, explicit task ownership, independent model review, and fail-closed identity drift checks.
+- Added `model doctor` strict JSON compatibility probes and `worker run --model-config` for durable OpenAI-compatible model workers.
+- Added bounded no-redirect HTTP transport with response-size ceilings and wall-clock deadlines, including slow-drip regression coverage.
+- Moved production worker lease timestamps to database-authoritative SQLite or PostgreSQL clocks while preserving explicit deterministic clocks for conformance tests.
+- Added a transactional outbox whose intents commit atomically only with passing worker outcomes, with idempotent enqueue, leased delivery, monotonic delivery tokens, expiry takeover, bounded retries, and terminal failure evidence.
+- Added guarded HTTPS webhook dispatch carrying `Idempotency-Key` and `X-Agent-Society-Delivery-Token`, plus outbox inspection commands.
+- Bound each dispatcher to one topic, added independent delivery-lease renewal, continuous signal-aware dispatch, bounded status filtering, and terminal-history cleanup.
+- Persisted endpoint-bound reviewer identities and attached them to model review traces so reviewer drift fails closed with worker drift.
+- Added bounded database-aggregate `health` and `metrics` snapshots covering workers, claims, approvals, and outbox state without loading durable payload histories.
+- Added optional worker-liveness health checks, a non-root container image, PostgreSQL Docker Compose worker/dispatcher deployment, local model configuration example, and production-oriented deployment guide.
+- Expanded SQLite/PostgreSQL outbox and rollback coverage and increased the suite to 314 tests; PostgreSQL 17 and container smoke tests remain required CI gates.
+
 ## 0.9.0 - 2026-07-17
 
 - Added coordinator-only `enqueue` planning and a durable worker service with deterministic ready-task discovery, independent lease maintenance, execute-review-retry processing, bounded task counts, and graceful signal draining.

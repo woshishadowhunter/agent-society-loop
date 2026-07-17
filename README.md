@@ -167,6 +167,41 @@ The self-test opens two independent SQLite connections and proves five invariant
 
 See [Scheduler safety](docs/scheduler.md) for worker lifecycle, backend scope, recovery, approval, and threat boundaries.
 
+## Deploy local model workers
+
+Version 0.10 lets the durable worker CLI load strict, secret-free model
+configuration. The bundled example targets an OpenAI-compatible endpoint; edit
+the model name and endpoint before use:
+
+```bash
+export LOCAL_MODEL_API_KEY="replace-with-a-model-token"
+agent-society model doctor examples/local-model-agents.json --json
+agent-society enqueue examples/goal-spec.json --db society.db --json
+agent-society worker run --worker-id local-model-a \
+  --model-config examples/local-model-agents.json \
+  --max-tasks 3 --db society.db --json
+```
+
+The doctor requires every configured provider to return one exact JSON probe.
+Workers register an endpoint-bound model identity and fail closed if an existing
+worker or reviewer agent ID changes model identity or task ownership.
+
+Production worker timestamps now come from the selected database. A durable
+outbox can commit side-effect intents atomically with a worker outcome, reclaim
+expired deliveries with a larger token, and dispatch HTTPS webhooks carrying an
+`Idempotency-Key` and `X-Agent-Society-Delivery-Token`.
+
+```bash
+agent-society health --db society.db --json
+agent-society metrics --db society.db --json
+agent-society outbox list --status pending --limit 100 --db society.db --json
+agent-society outbox purge --before 2026-06-01T00:00:00Z --db society.db --json
+```
+
+See [Production-oriented deployment](docs/deployment.md) for PostgreSQL,
+Docker Compose, model configuration, webhook delivery, and remaining production
+boundaries.
+
 ## Architecture
 
 ```mermaid
@@ -223,6 +258,7 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society run SPEC.json` | Execute a deterministic JSON task graph |
 | `agent-society enqueue SPEC.json` | Plan and persist a task graph without executing it |
 | `agent-society worker run ...` | Claim, renew, execute, review, and commit queued tasks |
+| `agent-society model doctor CONFIG` | Probe strict JSON compatibility for configured model providers |
 | `agent-society status GOAL_ID` | Inspect goal, tasks, reviews, and artifacts |
 | `agent-society events GOAL_ID` | Read the ordered audit trail |
 | `agent-society agents` | Inspect agent profiles and performance |
@@ -234,6 +270,11 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society scheduler claims [--goal-id ID]` | Inspect lease and fencing-token history |
 | `agent-society scheduler reap --at UTC` | Explicitly recover expired claims |
 | `agent-society scheduler self-test` | Prove five local scheduler safety invariants |
+| `agent-society health [--worker-id ID]` | Inspect database readiness and optional worker liveness |
+| `agent-society metrics` | Collect bounded operational counters |
+| `agent-society outbox list` | Inspect a bounded, filterable page of durable side-effect intents |
+| `agent-society outbox dispatch ... [--watch]` | Continuously deliver one topic to a fenced, idempotency-keyed webhook |
+| `agent-society outbox purge --before UTC` | Delete a bounded batch of old terminal delivery records |
 | `agent-society a2a inspect-card URL` | Inspect and hash a bounded Agent Card |
 | `agent-society a2a register ...` | Register an exact card, interface, and skill map |
 | `agent-society a2a agents` | Inspect remote trust records |
@@ -279,6 +320,12 @@ text = provider.complete([
 
 Use `ModelPlanner`, `ModelWorker`, and `ModelReviewer` from `model_agents.py` when strict JSON role adapters are appropriate. `ModelWorker` accepts only one structured tool call or final artifact per turn, applies a separate tool-step budget, and delegates every action to the policy-controlled tool runtime.
 
+For durable worker processes, use `--model-config` with
+`examples/local-model-agents.json`. Provider URLs and model IDs are explicit;
+bearer values are read only through named environment variables. Loopback model
+servers may omit authentication, while non-loopback endpoints require a secret
+and HTTPS unless insecure HTTP is explicitly enabled.
+
 ## What self-evolution means here
 
 After each reviewed attempt, the runtime updates performance for `(agent_id, task_type)`. Task types without an active deployment use success rate, review score, latency, and sample confidence. Agent upgrades can additionally be compared on an immutable benchmark and promoted through an explicit champion/challenger gate.
@@ -287,7 +334,19 @@ The runtime never approves its own mutations and does **not** rewrite prompts, a
 
 ## Current boundaries
 
-Version 0.9 provides a durable worker service and a PostgreSQL execution backend for multi-host task processing. It is not a complete control plane: PostgreSQL owns goals, local tasks, artifacts, reviews, attempts, performance, events, workers, claims, approvals, and traces, while A2A governance, evaluation, publication, and maintenance workflows remain on the SQLite path and must not be split across databases. The worker cannot forcibly cancel an arbitrary Python call; shutdown drains the current claim, and lease loss rejects the eventual repository commit. Runtime lease decisions use explicit UTC timestamps supplied by trusted worker processes, so production hosts still require clock synchronization. Fencing protects repository writes, not external exactly-once execution; model, tool, HTTP, and filesystem adapters need idempotency keys or a remotely enforced fencing epoch. MCP remains stable stdio only. A2A remains outbound `HTTP+JSON` polling only, without inbound service, streaming, webhooks, automatic resend, or automatic credential acquisition. Message-broker delivery, autoscaling, tenant isolation, and a web control plane remain future work.
+Version 0.10 provides model-configured workers, database-authoritative worker
+time, a transactional outbox boundary, bounded health and metrics snapshots, and
+container packaging. It is still not a complete control plane: PostgreSQL owns
+the local execution plane and outbox, while A2A governance, evaluation,
+publication, and maintenance workflows remain on the SQLite path and must not
+be split across databases. The worker cannot forcibly cancel an arbitrary
+Python call; shutdown drains the current claim, and lease loss rejects the
+eventual repository commit. Outbox fencing and idempotency headers do not make
+an external system exactly-once; receivers must enforce the idempotency key.
+Direct model, tool, HTTP, and filesystem calls still need adapter-level
+idempotency or a remotely enforced fencing epoch. MCP remains stable stdio only.
+A2A remains outbound `HTTP+JSON` polling only. Autoscaling, tenant isolation, a
+full OpenTelemetry exporter, and a web control plane remain future work.
 
 ## Development
 

@@ -56,4 +56,27 @@ jobs:
         run: python -m pip install -e ".[postgres]"
       - name: Run PostgreSQL scheduler conformance
         run: python -m unittest tests.test_postgres_storage -v
+      - name: Run PostgreSQL operations smoke test
+        env:
+          AGENT_SOCIETY_DATABASE_URL: ${{ env.SCHEDULER_POSTGRES_URL }}
+        run: |
+          agent-society health --json
+          agent-society metrics --json
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        env:
+          POSTGRES_PASSWORD: ci-postgres-password
+          AGENT_SOCIETY_DATABASE_URL: postgresql://agent_society:ci-postgres-password@postgres:5432/agent_society
+          LOCAL_MODEL_API_KEY: ci-model-token
+          WEBHOOK_URL: https://integrations.example/events
+          WEBHOOK_TOKEN: ci-webhook-token
+        run: docker compose config --quiet
+      - name: Build non-root runtime image
+        run: docker build --tag agent-society-loop:ci .
+      - name: Run default SQLite health command
+        run: docker run --rm agent-society-loop:ci
 

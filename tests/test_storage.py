@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
+from agent_society_loop import __version__
 from agent_society_loop.domain import (
     AgentProfile,
     ApprovalRequest,
@@ -24,10 +26,25 @@ from agent_society_loop.domain import (
     Verdict,
     WorkspaceSnapshot,
 )
+from agent_society_loop.scheduler import parse_utc
 from agent_society_loop.storage import SQLiteRepository
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
+    def test_public_version_matches_release(self):
+        self.assertEqual(__version__, "0.10.0")
+
+    def test_scheduler_now_uses_database_utc_clock(self):
+        repository = SQLiteRepository(":memory:")
+
+        value = repository.scheduler_now()
+
+        difference = abs(
+            (parse_utc(value) - datetime.now(timezone.utc)).total_seconds()
+        )
+        self.assertLess(difference, 5)
+        repository.close()
+
     def test_publication_record_survives_and_rejects_payload_change(self):
         repository = SQLiteRepository(":memory:")
         payload = {
