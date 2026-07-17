@@ -10,7 +10,9 @@ from enum import Enum
 from typing import Any, Iterable, Mapping, Sequence
 
 from .domain import (
+    AgentGenome,
     AgentProfile,
+    AgentSelfModel,
     ApprovalRequest,
     ApprovalStatus,
     Artifact,
@@ -18,6 +20,7 @@ from .domain import (
     Defect,
     DeploymentRecord,
     Event,
+    ExperienceRecord,
     Goal,
     GoalStatus,
     KnowledgeItem,
@@ -114,6 +117,26 @@ def _outbox(value: Any) -> OutboxMessage:
     data = _payload(value)
     data["status"] = OutboxStatus(data["status"])
     return OutboxMessage(**data)
+
+
+def _genome(value: Any) -> AgentGenome:
+    data = _payload(value)
+    self_model = data["self_model"]
+    if isinstance(self_model, dict):
+        self_model["success_signals"] = tuple(self_model.get("success_signals", ()))
+        self_model["failure_modes"] = tuple(self_model.get("failure_modes", ()))
+        data["self_model"] = AgentSelfModel(**self_model)
+    data["traits"] = tuple(data.get("traits", ()))
+    data["tool_profile"] = tuple(data.get("tool_profile", ()))
+    data["parents"] = tuple(data.get("parents", ()))
+    return AgentGenome(**data)
+
+
+def _experience(value: Any) -> ExperienceRecord:
+    data = _payload(value)
+    data["lessons"] = tuple(data.get("lessons", ()))
+    data["tags"] = tuple(data.get("tags", ()))
+    return ExperienceRecord(**data)
 
 
 class PostgreSQLRepository:
@@ -232,6 +255,15 @@ class PostgreSQLRepository:
             """CREATE TABLE IF NOT EXISTS performance (
                 agent_id TEXT NOT NULL, task_type TEXT NOT NULL, payload JSONB NOT NULL,
                 PRIMARY KEY(agent_id, task_type))""",
+            """CREATE TABLE IF NOT EXISTS agent_genomes (
+                agent_id TEXT PRIMARY KEY, payload JSONB NOT NULL)""",
+            """CREATE TABLE IF NOT EXISTS experience_records (
+                experience_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL,
+                task_type TEXT NOT NULL, goal_id TEXT NOT NULL, payload JSONB NOT NULL)""",
+            """CREATE INDEX IF NOT EXISTS experience_records_agent_idx
+                ON experience_records(agent_id, task_type)""",
+            """CREATE INDEX IF NOT EXISTS experience_records_goal_idx
+                ON experience_records(goal_id)""",
             """CREATE TABLE IF NOT EXISTS knowledge (
                 knowledge_id TEXT PRIMARY KEY, payload JSONB NOT NULL)""",
             """CREATE TABLE IF NOT EXISTS deployments (
@@ -672,6 +704,74 @@ class PostgreSQLRepository:
             data["recent_results"] = tuple(data["recent_results"])
             result.append(PerformanceRecord(**data))
         return result
+
+    def save_agent_genome(self, genome: AgentGenome) -> None:
+        self.connection.execute(
+            """INSERT INTO agent_genomes(agent_id, payload) VALUES (%s, %s)
+               ON CONFLICT(agent_id) DO UPDATE SET payload=excluded.payload""",
+            (genome.agent_id, self._j(genome)),
+        )
+
+    def get_agent_genome(self, agent_id: str) -> AgentGenome | None:
+        row = self.connection.execute(
+            "SELECT payload FROM agent_genomes WHERE agent_id=%s", (agent_id,)
+        ).fetchone()
+        return None if row is None else _genome(row["payload"])
+
+    def list_agent_genomes(self) -> list[AgentGenome]:
+        rows = self.connection.execute(
+            "SELECT payload FROM agent_genomes ORDER BY agent_id"
+        ).fetchall()
+        return [_genome(row["payload"]) for row in rows]
+
+    def save_experience(self, experience: ExperienceRecord) -> None:
+        self.connection.execute(
+            """INSERT INTO experience_records(
+                   experience_id, agent_id, task_type, goal_id, payload
+               ) VALUES (%s, %s, %s, %s, %s)
+               ON CONFLICT(experience_id) DO NOTHING""",
+            (
+                experience.experience_id,
+                experience.agent_id,
+                experience.task_type,
+                experience.goal_id,
+                self._j(experience),
+            ),
+        )
+
+    def list_experience(
+        self,
+        *,
+        agent_id: str | None = None,
+        task_type: str | None = None,
+        goal_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[ExperienceRecord]:
+        if limit is not None and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 10_000
+        ):
+            raise ValueError("experience list limit must be between 1 and 10000")
+        query = "SELECT payload FROM experience_records"
+        clauses = []
+        params: list[Any] = []
+        for field, value in (
+            ("agent_id", agent_id),
+            ("task_type", task_type),
+            ("goal_id", goal_id),
+        ):
+            if value is not None:
+                clauses.append(f"{field}=%s")
+                params.append(str(value))
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY experience_id"
+        if limit is not None:
+            query += " LIMIT %s"
+            params.append(limit)
+        rows = self.connection.execute(query, params).fetchall()
+        return [_experience(row["payload"]) for row in rows]
 
     def save_knowledge(self, item: KnowledgeItem) -> None:
         self.connection.execute(

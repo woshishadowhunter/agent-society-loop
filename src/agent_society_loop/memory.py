@@ -44,6 +44,7 @@ class MemoryManager:
             if review.verdict.value == "FAIL"
         ]
         knowledge = self.search_knowledge(task.description, (task.task_type,), limit=5)
+        experience = self.repository.list_experience(task_type=task.task_type, limit=5)
         return {
             "goal": {"title": goal.title, "description": goal.description},
             "task_context": dict(task.context),
@@ -52,6 +53,17 @@ class MemoryManager:
             "knowledge": [
                 {"title": item.title, "content": item.content, "tags": item.tags}
                 for item in knowledge
+            ],
+            "experience": [
+                {
+                    "agent_id": item.agent_id,
+                    "task_type": item.task_type,
+                    "verdict": item.verdict,
+                    "score": item.score,
+                    "lessons": item.lessons,
+                    "tags": item.tags,
+                }
+                for item in experience
             ],
         }
 

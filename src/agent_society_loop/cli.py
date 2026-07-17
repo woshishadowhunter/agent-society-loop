@@ -32,7 +32,9 @@ from .a2a_governance import (
 from .a2a_reliability import run_reliability_campaign
 from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import (
+    AgentGenome,
     AgentProfile,
+    AgentSelfModel,
     BenchmarkCase,
     CandidateExecution,
     CandidateIdentity,
@@ -47,6 +49,7 @@ from .domain import (
 )
 from .engine import LoopEngine, resolve_approval
 from .evaluation import BenchmarkEvaluator, PromotionPolicy
+from .experience import ExperienceDistiller
 from .github import GitHubIssueClient, GitHubPullRequestClient
 from .maintenance import (
     build_maintenance_engine,
@@ -153,6 +156,37 @@ def _load_spec(path: str) -> dict[str, Any]:
                 + ", ".join(task_required)
             )
     return data
+
+
+def _load_genome(agent_id: str, path: str) -> AgentGenome:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid genome file: {error}") from error
+    if not isinstance(data, dict):
+        raise ValueError("invalid genome file: JSON object is required")
+    self_model_data = data.get("self_model", {})
+    if self_model_data and not isinstance(self_model_data, dict):
+        raise ValueError("invalid genome file: self_model must be an object")
+    self_model = None
+    if self_model_data:
+        self_model = AgentSelfModel.create(
+            mission=str(self_model_data.get("mission", "")),
+            success_signals=tuple(self_model_data.get("success_signals", ())),
+            failure_modes=tuple(self_model_data.get("failure_modes", ())),
+        )
+    return AgentGenome.create(
+        agent_id,
+        base_model=str(data.get("base_model", "")),
+        role_seed=str(data.get("role_seed", "")),
+        self_model=self_model,
+        traits=tuple(data.get("traits", ())),
+        tool_profile=tuple(data.get("tool_profile", ())),
+        memory_profile=dict(data.get("memory_profile", {})),
+        risk_policy=str(data.get("risk_policy", "read_only")),
+        parents=tuple(data.get("parents", ())),
+        generation=int(data.get("generation", 1)),
+    )
 
 
 def _agent_id(task_type: str) -> str:
@@ -442,6 +476,8 @@ def _open_repository(args):
             "health",
             "metrics",
             "outbox",
+            "genome",
+            "experience",
         }
         if args.command not in supported:
             raise ValueError(
@@ -828,6 +864,44 @@ def build_parser() -> argparse.ArgumentParser:
     search.add_argument("--limit", type=int, default=5)
     search.add_argument("--db", default="agent-society.db")
     search.add_argument("--json", action="store_true")
+
+    genome = commands.add_parser("genome", help="manage auditable agent seed genomes")
+    genome_commands = genome.add_subparsers(dest="genome_command", required=True)
+    genome_set = genome_commands.add_parser("set", help="save an agent genome file")
+    genome_set.add_argument("agent_id")
+    genome_set.add_argument("path")
+    genome_set.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(genome_set)
+    genome_set.add_argument("--json", action="store_true")
+    genome_show = genome_commands.add_parser("show", help="inspect an agent genome")
+    genome_show.add_argument("agent_id")
+    genome_show.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(genome_show)
+    genome_show.add_argument("--json", action="store_true")
+
+    experience = commands.add_parser(
+        "experience", help="distill and inspect reviewed task lessons"
+    )
+    experience_commands = experience.add_subparsers(
+        dest="experience_command", required=True
+    )
+    experience_distill = experience_commands.add_parser(
+        "distill", help="distill reviewed attempts for one goal"
+    )
+    experience_distill.add_argument("goal_id")
+    experience_distill.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(experience_distill)
+    experience_distill.add_argument("--json", action="store_true")
+    experience_list = experience_commands.add_parser(
+        "list", help="list distilled experience records"
+    )
+    experience_list.add_argument("--agent-id")
+    experience_list.add_argument("--task-type")
+    experience_list.add_argument("--goal-id")
+    experience_list.add_argument("--limit", type=int, default=100)
+    experience_list.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(experience_list)
+    experience_list.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1497,6 +1571,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 decided_by=args.by,
             )
             _emit(value, args.json, f"Approval {value.approval_id}: {value.status.value}")
+            return 0
+
+        if args.command == "genome":
+            if args.genome_command == "set":
+                value = _load_genome(args.agent_id, args.path)
+                repository.save_agent_genome(value)
+                _emit(value, args.json, f"Saved genome for {value.agent_id}")
+                return 0
+            value = repository.get_agent_genome(args.agent_id)
+            if value is None:
+                raise KeyError(f"agent genome not found: {args.agent_id}")
+            _emit(value, args.json, f"Genome {value.agent_id}: {value.role_seed}")
+            return 0
+
+        if args.command == "experience":
+            if args.experience_command == "distill":
+                if repository.get_goal(args.goal_id) is None:
+                    raise KeyError(f"goal not found: {args.goal_id}")
+                value = ExperienceDistiller(repository).distill_goal(args.goal_id)
+                _emit(value, args.json, f"Distilled {len(value)} experience records")
+                return 0
+            value = repository.list_experience(
+                agent_id=args.agent_id,
+                task_type=args.task_type,
+                goal_id=args.goal_id,
+                limit=args.limit,
+            )
+            _emit(value, args.json, f"{len(value)} experience records")
             return 0
 
         memory = MemoryManager(repository)

@@ -266,6 +266,10 @@ PostgreSQL、Docker Compose、模型配置、Webhook 投递和剩余边界见
 | `agent-society evaluations [RUN_ID]` | 查看评测结论和逐案例结果 |
 | `agent-society promote RUN_ID --by NAME` | 显式晋级通过门禁的挑战者 |
 | `agent-society deployments` | 查看各任务类型当前冠军 |
+| `agent-society genome set AGENT_ID FILE` | 保存可审计的 Agent 种子基因档案 |
+| `agent-society genome show AGENT_ID` | 查看角色种子、自我模型、特质和谱系 |
+| `agent-society experience distill GOAL_ID` | 从已质检任务中蒸馏可复用经验 |
+| `agent-society experience list` | 按 Agent、任务类型或目标查看经验记录 |
 | `agent-society scheduler workers` | 查看 worker session 及过期状态 |
 | `agent-society scheduler claims [--goal-id ID]` | 查看租约与 fencing token 历史 |
 | `agent-society scheduler reap --at UTC` | 显式恢复过期领取 |
@@ -324,11 +328,13 @@ provider = OpenAICompatibleProvider(
 
 每次经过质检的执行都会更新 `(agent_id, task_type)` 绩效，包括通过率、平均得分、耗时和近期结果。没有 active deployment 的任务类型继续按这些数据选人；Agent 升级还可以通过不可变 benchmark 比较，并经显式冠军/挑战者门禁晋级。
 
-运行时永远不会自行批准修改，也不会改写提示词、验收标准或安全规则。受控维护只能根据精确且持久化的审批修改指定工作区，避免一次低质量结果反过来降低质量标准。
+v1.1 增加第一层“种子与熏习”工程载体。Agent genome 会记录角色种子、自我模型、能力特质、工具画像、记忆策略、风险策略、父代和代际。经过质检的任务可以被蒸馏成 experience record：有界经验、缺陷标签、判定结果、评分和产物摘录。后续同类任务会把这些经验注入上下文，让系统不只记住分数，也能复用成功/失败模式。
+
+运行时永远不会自行批准修改，也不会改写提示词、验收标准或安全规则。Genome 和 experience 只是建议性上下文，不能授予工具权限，也不能改变 deployment。受控维护只能根据精确且持久化的审批修改指定工作区，避免一次低质量结果反过来降低质量标准。
 
 ## 当前边界
 
-v1.0 是 CLI/runtime 包的第一个稳定产品边界，包含模型配置 Worker、数据库权威租约时间、事务 Outbox、有界健康与指标快照、容器部署文件，以及安装级产品自测命令。它仍不是完整托管控制平面。PostgreSQL 负责本地执行平面与 Outbox；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。Worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。Outbox fencing 和幂等请求头不能让外部系统自动获得 exactly-once，接收端必须强制校验幂等键。直接模型、工具、HTTP 与文件系统调用仍需适配器级幂等或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；自动扩缩容、租户隔离、完整 OpenTelemetry 导出、入站 A2A 服务和 Web 控制台仍是后续工作。
+v1.1 建立在 CLI/runtime 包的第一个稳定产品边界之上，包含模型配置 Worker、数据库权威租约时间、事务 Outbox、有界健康与指标快照、容器部署文件、安装级产品自测命令，以及 Agent genome / experience distillation。它仍不是完整托管控制平面。PostgreSQL 负责本地执行平面与 Outbox；A2A 治理、评测、发布与维护工作流仍走 SQLite，不能把一次运行拆到两个数据库。Worker 无法强制中断任意 Python 调用；停止信号会排空当前 claim，租约丢失则拒绝最终提交。Outbox fencing 和幂等请求头不能让外部系统自动获得 exactly-once，接收端必须强制校验幂等键。直接模型、工具、HTTP 与文件系统调用仍需适配器级幂等或远端强制校验的 fencing epoch。MCP 仍仅支持稳定版 stdio，A2A 仍仅支持出站 `HTTP+JSON` 轮询；自动扩缩容、租户隔离、完整 OpenTelemetry 导出、入站 A2A 服务和 Web 控制台仍是后续工作。
 
 生产运行请同时阅读 [生产化部署文档](docs/deployment.md) 和 [生产运行手册](docs/production-runbook.md)。发布版本请使用 [v1.0 发布清单](docs/release-checklist.md)。
 

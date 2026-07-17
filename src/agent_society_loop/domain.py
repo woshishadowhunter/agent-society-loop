@@ -657,6 +657,166 @@ class PerformanceRecord:
         return self.passes / self.attempts if self.attempts else 0.5
 
 
+_GENOME_RISK_POLICIES = frozenset(
+    {"read_only", "approval_required", "sandboxed", "operator_managed"}
+)
+
+
+def _sorted_unique(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(sorted({str(value).strip() for value in values if str(value).strip()}))
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSelfModel:
+    mission: str
+    success_signals: tuple[str, ...] = ()
+    failure_modes: tuple[str, ...] = ()
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        mission: str,
+        success_signals: Sequence[str] = (),
+        failure_modes: Sequence[str] = (),
+    ) -> AgentSelfModel:
+        if not str(mission).strip():
+            raise ValueError("self model mission must not be empty")
+        return cls(
+            str(mission).strip(),
+            _sorted_unique(success_signals),
+            _sorted_unique(failure_modes),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class AgentGenome:
+    agent_id: str
+    base_model: str
+    role_seed: str
+    self_model: AgentSelfModel
+    traits: tuple[str, ...] = ()
+    tool_profile: tuple[str, ...] = ()
+    memory_profile: dict[str, Any] = field(default_factory=dict)
+    risk_policy: str = "read_only"
+    parents: tuple[str, ...] = ()
+    generation: int = 1
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        agent_id: str,
+        *,
+        base_model: str,
+        role_seed: str,
+        self_model: AgentSelfModel | None = None,
+        traits: Sequence[str] = (),
+        tool_profile: Sequence[str] = (),
+        memory_profile: dict[str, Any] | None = None,
+        risk_policy: str = "read_only",
+        parents: Sequence[str] = (),
+        generation: int = 1,
+    ) -> AgentGenome:
+        normalized_agent_id = str(agent_id).strip()
+        if not normalized_agent_id:
+            raise ValueError("agent ID must not be empty")
+        if not str(base_model).strip() or not str(role_seed).strip():
+            raise ValueError("base model and role seed must not be empty")
+        normalized_policy = str(risk_policy).strip()
+        if normalized_policy not in _GENOME_RISK_POLICIES:
+            raise ValueError("risk policy is not supported")
+        if isinstance(generation, bool) or int(generation) < 1:
+            raise ValueError("generation must be a positive integer")
+        return cls(
+            normalized_agent_id,
+            str(base_model).strip(),
+            str(role_seed).strip(),
+            self_model
+            or AgentSelfModel.create(mission=f"Serve as {normalized_agent_id}"),
+            _sorted_unique(traits),
+            _sorted_unique(tool_profile),
+            dict(memory_profile or {}),
+            normalized_policy,
+            _sorted_unique(parents),
+            int(generation),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExperienceRecord:
+    experience_id: str
+    goal_id: str
+    task_id: str
+    task_type: str
+    agent_id: str
+    attempt_no: int
+    verdict: str
+    score: float
+    lessons: tuple[str, ...]
+    tags: tuple[str, ...] = ()
+    artifact_excerpt: str = ""
+    created_at: str = field(default_factory=utc_now)
+
+    @classmethod
+    def create(
+        cls,
+        task: Task,
+        review: Review,
+        artifact: Artifact | None,
+        agent_id: str,
+        *,
+        lessons: Sequence[str],
+        tags: Sequence[str] = (),
+    ) -> ExperienceRecord:
+        normalized_lessons = tuple(
+            str(lesson).strip()[:240]
+            for lesson in lessons
+            if str(lesson).strip()
+        )
+        if not normalized_lessons:
+            raise ValueError("experience lessons must not be empty")
+        normalized_agent_id = str(agent_id).strip()
+        if not normalized_agent_id:
+            raise ValueError("experience agent ID must not be empty")
+        payload = {
+            "goal_id": task.goal_id,
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "agent_id": normalized_agent_id,
+            "attempt_no": review.attempt_no,
+            "verdict": review.verdict.value,
+            "score": float(review.score),
+            "lessons": normalized_lessons,
+            "tags": _sorted_unique(tags),
+            "defects": [
+                {
+                    "location": defect.location,
+                    "issue": defect.issue,
+                    "suggestion": defect.suggestion,
+                }
+                for defect in review.defects
+            ],
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        excerpt = (artifact.content if artifact is not None else "")[:500]
+        return cls(
+            f"experience-{digest[:16]}",
+            task.goal_id,
+            task.task_id,
+            task.task_type,
+            normalized_agent_id,
+            int(review.attempt_no),
+            review.verdict.value,
+            float(review.score),
+            normalized_lessons,
+            _sorted_unique(tags),
+            excerpt,
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class BenchmarkCase:
     case_id: str

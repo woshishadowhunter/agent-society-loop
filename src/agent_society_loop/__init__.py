@@ -45,6 +45,8 @@ from .worker_service import (
 )
 
 from .domain import (
+    AgentGenome,
+    AgentSelfModel,
     ApprovalRequest,
     ApprovalStatus,
     BenchmarkCase,
@@ -60,6 +62,7 @@ from .domain import (
     EvaluationOutcome,
     EvaluationRun,
     EvaluationStatus,
+    ExperienceRecord,
     Goal,
     GoalStatus,
     PolicyActivation,
@@ -78,8 +81,11 @@ from .domain import (
     Verdict,
     WorkspaceSnapshot,
 )
+from .experience import ExperienceDistiller
 
 __all__ = [
+    "AgentGenome",
+    "AgentSelfModel",
     "ApprovalRequest",
     "ApprovalStatus",
     "BenchmarkCase",
@@ -95,6 +101,8 @@ __all__ = [
     "EvaluationOutcome",
     "EvaluationRun",
     "EvaluationStatus",
+    "ExperienceRecord",
+    "ExperienceDistiller",
     "Goal",
     "GoalStatus",
     "PolicyActivation",
@@ -147,4 +155,4 @@ __all__ = [
     "WorkerServiceConfig",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
