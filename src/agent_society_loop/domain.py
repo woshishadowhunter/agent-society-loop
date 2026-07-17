@@ -818,6 +818,17 @@ class ExperienceRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class GenomeRecombinationReport:
+    child: AgentGenome
+    task_type: str
+    parents: tuple[str, ...]
+    supporting_experience: tuple[str, ...] = ()
+    inherited_traits: tuple[str, ...] = ()
+    safety_notes: tuple[str, ...] = ()
+    created_at: str = field(default_factory=utc_now)
+
+
+@dataclass(frozen=True, slots=True)
 class BenchmarkCase:
     case_id: str
     task_type: str

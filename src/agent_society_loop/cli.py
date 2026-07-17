@@ -49,6 +49,7 @@ from .domain import (
 )
 from .engine import LoopEngine, resolve_approval
 from .evaluation import BenchmarkEvaluator, PromotionPolicy
+from .evolution import GenomeRecombiner
 from .experience import ExperienceDistiller
 from .github import GitHubIssueClient, GitHubPullRequestClient
 from .maintenance import (
@@ -878,6 +879,15 @@ def build_parser() -> argparse.ArgumentParser:
     genome_show.add_argument("--db", default="agent-society.db")
     _add_postgres_options(genome_show)
     genome_show.add_argument("--json", action="store_true")
+    genome_recombine = genome_commands.add_parser(
+        "recombine", help="create an auditable child genome candidate"
+    )
+    genome_recombine.add_argument("child_id")
+    genome_recombine.add_argument("--parents", nargs="+", required=True)
+    genome_recombine.add_argument("--task-type", required=True)
+    genome_recombine.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(genome_recombine)
+    genome_recombine.add_argument("--json", action="store_true")
 
     experience = commands.add_parser(
         "experience", help="distill and inspect reviewed task lessons"
@@ -1578,6 +1588,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 value = _load_genome(args.agent_id, args.path)
                 repository.save_agent_genome(value)
                 _emit(value, args.json, f"Saved genome for {value.agent_id}")
+                return 0
+            if args.genome_command == "recombine":
+                value = GenomeRecombiner(repository).recombine(
+                    args.child_id,
+                    args.parents,
+                    task_type=args.task_type,
+                )
+                _emit(
+                    value,
+                    args.json,
+                    f"Created child genome candidate {value.child.agent_id}",
+                )
                 return 0
             value = repository.get_agent_genome(args.agent_id)
             if value is None:

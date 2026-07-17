@@ -16,6 +16,7 @@ Agent Society Loop is an auditable orchestration runtime. Its job is to make pla
 | `worker_service.py` | Claim discovery, independent lease maintenance, execute-review, approval pause, and graceful drain |
 | `memory.py` | Context assembly, knowledge retrieval, performance aggregation |
 | `experience.py` | Deterministic distillation of reviewed attempts into reusable lessons |
+| `evolution.py` | Deterministic parent genome recombination into inactive child candidates |
 | `selection.py` | Eligible-agent filtering and explainable ranking |
 | `engine.py` | Goal lifecycle, outer loop, inner loop, budgets, resume |
 | `deterministic.py` | Reproducible planner, specialists, and criteria reviewer |
@@ -105,6 +106,7 @@ Cold-start values are neutral: success `0.5`, review `0.5`, latency `0.5`, confi
 - Social memory: aggregate and recent outcomes keyed by agent and task type.
 - Seed memory: auditable agent genomes describing role seed, self-model, traits, tool profile, memory profile, risk policy, lineage parents, and generation.
 - Experience memory: deterministic success/failure lessons distilled from reviewed attempts and injected into later matching task contexts.
+- Recombination memory: child genome candidates with explicit parent lineage, strict risk inheritance, shared tool inheritance, and supporting experience IDs.
 - Audit memory: ordered events for goals, planning, selection, attempts, reviews, retries, recovery, and completion.
 - Evaluation memory: benchmark digests, per-case outcomes, gate metrics, promotion identity, and active deployments.
 - Delegation memory: pinned card identity, durable message and remote task IDs, poll state, normalized result digest, and sanitized terminal category.
@@ -121,7 +123,7 @@ SQLite stores structured values as JSON payloads beside indexed identity and ord
 - `max_actions` bounds the whole run, including retries across process restarts.
 - Review PASS alone is insufficient when its score is below `min_passing_score`.
 - Long-term knowledge and review feedback cannot modify budgets or criteria.
-- Agent genomes and distilled experience are advisory context only; they do not grant tool permissions or change risk policy, criteria, budgets, deployments, or promotion gates.
+- Agent genomes, distilled experience, and recombined child candidates are advisory context only; they do not grant tool permissions or change risk policy, criteria, budgets, deployments, or promotion gates.
 - Provider secrets are kept outside persistence and error messages.
 - Repository source changes require an exact durable approval; no component can self-approve.
 - Read-only tools run immediately; write and execute tools require a durable approval.

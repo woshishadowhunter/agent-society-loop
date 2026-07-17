@@ -183,6 +183,62 @@ class CLITests(unittest.TestCase):
             self.assertEqual((code, error), (0, ""))
             self.assertEqual(shown["self_model"]["mission"], "Produce verified analysis")
 
+    def test_genome_recombine_saves_child_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = str(root / "genome.db")
+            for agent_id, role_seed, risk_policy, tools in (
+                ("analyst-a", "Evidence analyst", "read_only", ["search", "sqlite"]),
+                ("analyst-b", "Practical analyst", "approval_required", ["sqlite"]),
+            ):
+                genome_path = root / f"{agent_id}.json"
+                genome_path.write_text(
+                    json.dumps(
+                        {
+                            "base_model": "local-qwen",
+                            "role_seed": role_seed,
+                            "self_model": {
+                                "mission": f"Serve as {role_seed}",
+                                "success_signals": ["passes review"],
+                                "failure_modes": ["unsupported claim"],
+                            },
+                            "traits": ["structured"],
+                            "tool_profile": tools,
+                            "risk_policy": risk_policy,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                code, _, error = self.run_cli(
+                    [
+                        "genome", "set", agent_id, str(genome_path),
+                        "--db", database, "--json",
+                    ]
+                )
+                self.assertEqual((code, error), (0, ""))
+
+            code, output, error = self.run_cli(
+                [
+                    "genome", "recombine", "analyst-child",
+                    "--parents", "analyst-a", "analyst-b",
+                    "--task-type", "market_analysis",
+                    "--db", database, "--json",
+                ]
+            )
+            report = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(report["child"]["agent_id"], "analyst-child")
+            self.assertEqual(report["child"]["parents"], ["analyst-a", "analyst-b"])
+            self.assertEqual(report["child"]["risk_policy"], "approval_required")
+            self.assertEqual(report["child"]["tool_profile"], ["sqlite"])
+
+            code, output, error = self.run_cli(
+                ["genome", "show", "analyst-child", "--db", database, "--json"]
+            )
+            shown = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(shown["agent_id"], "analyst-child")
+
     def test_experience_distill_and_list_after_demo(self):
         with tempfile.TemporaryDirectory() as directory:
             database = str(Path(directory) / "experience.db")

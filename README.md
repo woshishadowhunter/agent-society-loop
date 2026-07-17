@@ -272,6 +272,7 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society deployments` | Inspect active task-type champions |
 | `agent-society genome set AGENT_ID FILE` | Save an auditable agent seed genome |
 | `agent-society genome show AGENT_ID` | Inspect role seed, self-model, traits, and lineage |
+| `agent-society genome recombine CHILD_ID --parents A B --task-type TYPE` | Create an auditable child genome candidate |
 | `agent-society experience distill GOAL_ID` | Distill reviewed attempts into reusable lessons |
 | `agent-society experience list` | Inspect accumulated task lessons by agent, task type, or goal |
 | `agent-society scheduler workers` | Inspect durable worker sessions and expiry |
@@ -340,14 +341,17 @@ After each reviewed attempt, the runtime updates performance for `(agent_id, tas
 
 Version 1.1 adds the first explicit seed-and-conditioning layer. An agent genome records role seed, self-model, traits, tool profile, memory profile, risk policy, parents, and generation. Reviewed task attempts can be distilled into experience records: bounded lessons, defect tags, verdict, score, and artifact excerpts. Future matching tasks receive those lessons in context, giving the society reusable memory beyond raw scores.
 
-The runtime never approves its own mutations and does **not** rewrite prompts, acceptance criteria, or safety policy. Genomes and experience are advisory context only; they do not grant tool permissions or change deployments. Guarded maintenance may change the selected workspace only through exact, durable approvals. That boundary keeps changes reviewable and prevents a weak result from redefining what "good" means.
+Version 1.2 adds deterministic genome recombination. Operators can combine two or more parent genomes for one task type into a child candidate. The child inherits parent lineage and generation, uses the strictest parent risk policy, receives only the shared parent tool profile, and may turn high-scoring PASS experience into success signals while failed experience becomes failure-mode awareness.
+
+The runtime never approves its own mutations and does **not** rewrite prompts, acceptance criteria, or safety policy. Genomes, experience, and recombined children are advisory artifacts only; they do not grant tool permissions, activate deployments, or replace benchmark promotion. Guarded maintenance may change the selected workspace only through exact, durable approvals. That boundary keeps changes reviewable and prevents a weak result from redefining what "good" means.
 
 ## Current boundaries
 
-Version 1.1 builds on the first stable product boundary for the CLI/runtime package.
+Version 1.2 builds on the first stable product boundary for the CLI/runtime package.
 It includes model-configured workers, database-authoritative worker time, a
 transactional outbox boundary, bounded health and metrics snapshots, container
-packaging, and an install-time product readiness self-test. It is still not a
+packaging, an install-time product readiness self-test, agent genome /
+experience memory, and candidate-only genome recombination. It is still not a
 complete hosted control plane: PostgreSQL owns the local execution plane and
 outbox, while A2A governance, evaluation, publication, and maintenance workflows
 remain on the SQLite path and must not be split across databases. The worker
