@@ -63,6 +63,7 @@ from .domain import (
     EvaluationRun,
     EvaluationStatus,
     ExperienceRecord,
+    GenomeRecombinationReport,
     Goal,
     GoalStatus,
     PolicyActivation,
@@ -81,6 +82,7 @@ from .domain import (
     Verdict,
     WorkspaceSnapshot,
 )
+from .evolution import GenomeRecombiner
 from .experience import ExperienceDistiller
 
 __all__ = [
@@ -103,6 +105,8 @@ __all__ = [
     "EvaluationStatus",
     "ExperienceRecord",
     "ExperienceDistiller",
+    "GenomeRecombinationReport",
+    "GenomeRecombiner",
     "Goal",
     "GoalStatus",
     "PolicyActivation",
@@ -155,4 +159,4 @@ __all__ = [
     "WorkerServiceConfig",
 ]
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"

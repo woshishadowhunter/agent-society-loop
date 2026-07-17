@@ -2,6 +2,14 @@
 
 All notable changes are documented here.
 
+## 1.2.0 - 2026-07-17
+
+- Added deterministic genome recombination for creating auditable child agent candidates from two or more parent genomes.
+- Added strict recombination inheritance rules: child generation is parent max + 1, risk policy uses the strictest parent, and tool profile is the parent intersection only.
+- Added experience-backed child self-model refinement: high-scoring PASS lessons become success signals while failed lessons become failure modes.
+- Added `genome recombine` CLI workflow and bilingual documentation for candidate-only evolution.
+- Kept recombined genomes inactive by default; deployment and routing still require existing evaluation and explicit promotion paths.
+
 ## 1.1.0 - 2026-07-17
 
 - Added auditable agent seed genomes with role seed, self-model, traits, tool profile, memory profile, risk policy, parents, and generation metadata.
