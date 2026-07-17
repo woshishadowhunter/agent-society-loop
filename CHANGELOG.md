@@ -2,6 +2,14 @@
 
 All notable changes are documented here.
 
+## 1.1.0 - 2026-07-17
+
+- Added auditable agent seed genomes with role seed, self-model, traits, tool profile, memory profile, risk policy, parents, and generation metadata.
+- Added deterministic experience distillation from reviewed attempts into durable success/failure lessons, defect tags, and bounded artifact excerpts.
+- Added `genome set/show` and `experience distill/list` CLI workflows for managing seed records and inspecting accumulated task lessons.
+- Injected relevant distilled experience into future task context without allowing it to change acceptance criteria, budgets, deployments, or tool policy.
+- Added SQLite and PostgreSQL persistence for genomes and experience records as the engineering basis for later recombination, incubation, and promotion workflows.
+
 ## 1.0.0 - 2026-07-17
 
 - Promoted the v0.10 local-model worker, PostgreSQL execution-plane, scheduler fencing, and transactional outbox runtime to the first stable product boundary.

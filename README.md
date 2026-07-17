@@ -270,6 +270,10 @@ The complete format is documented in [Goal specification](docs/goal-spec.md).
 | `agent-society evaluations [RUN_ID]` | Inspect evaluation decisions and raw case outcomes |
 | `agent-society promote RUN_ID --by NAME` | Explicitly promote a recommended challenger |
 | `agent-society deployments` | Inspect active task-type champions |
+| `agent-society genome set AGENT_ID FILE` | Save an auditable agent seed genome |
+| `agent-society genome show AGENT_ID` | Inspect role seed, self-model, traits, and lineage |
+| `agent-society experience distill GOAL_ID` | Distill reviewed attempts into reusable lessons |
+| `agent-society experience list` | Inspect accumulated task lessons by agent, task type, or goal |
 | `agent-society scheduler workers` | Inspect durable worker sessions and expiry |
 | `agent-society scheduler claims [--goal-id ID]` | Inspect lease and fencing-token history |
 | `agent-society scheduler reap --at UTC` | Explicitly recover expired claims |
@@ -334,11 +338,13 @@ and HTTPS unless insecure HTTP is explicitly enabled.
 
 After each reviewed attempt, the runtime updates performance for `(agent_id, task_type)`. Task types without an active deployment use success rate, review score, latency, and sample confidence. Agent upgrades can additionally be compared on an immutable benchmark and promoted through an explicit champion/challenger gate.
 
-The runtime never approves its own mutations and does **not** rewrite prompts, acceptance criteria, or safety policy. Guarded maintenance may change the selected workspace only through exact, durable approvals. That boundary keeps changes reviewable and prevents a weak result from redefining what “good” means.
+Version 1.1 adds the first explicit seed-and-conditioning layer. An agent genome records role seed, self-model, traits, tool profile, memory profile, risk policy, parents, and generation. Reviewed task attempts can be distilled into experience records: bounded lessons, defect tags, verdict, score, and artifact excerpts. Future matching tasks receive those lessons in context, giving the society reusable memory beyond raw scores.
+
+The runtime never approves its own mutations and does **not** rewrite prompts, acceptance criteria, or safety policy. Genomes and experience are advisory context only; they do not grant tool permissions or change deployments. Guarded maintenance may change the selected workspace only through exact, durable approvals. That boundary keeps changes reviewable and prevents a weak result from redefining what "good" means.
 
 ## Current boundaries
 
-Version 1.0 is the first stable product boundary for the CLI/runtime package.
+Version 1.1 builds on the first stable product boundary for the CLI/runtime package.
 It includes model-configured workers, database-authoritative worker time, a
 transactional outbox boundary, bounded health and metrics snapshots, container
 packaging, and an install-time product readiness self-test. It is still not a

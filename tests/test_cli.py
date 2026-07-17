@@ -143,6 +143,73 @@ class CLITests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(results[0]["knowledge_id"], knowledge_id)
 
+    def test_genome_set_and_show_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = str(root / "genome.db")
+            genome_path = root / "genome.json"
+            genome_path.write_text(
+                json.dumps(
+                    {
+                        "base_model": "local-qwen",
+                        "role_seed": "Evidence-first analyst",
+                        "self_model": {
+                            "mission": "Produce verified analysis",
+                            "success_signals": ["passes review"],
+                            "failure_modes": ["unsupported claim"],
+                        },
+                        "traits": ["careful", "evidence"],
+                        "tool_profile": ["docs"],
+                        "risk_policy": "read_only",
+                    }
+                ),
+                encoding="utf-8-sig",
+            )
+
+            code, output, error = self.run_cli(
+                [
+                    "genome", "set", "analyst", str(genome_path),
+                    "--db", database, "--json",
+                ]
+            )
+            saved = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(saved["agent_id"], "analyst")
+
+            code, output, error = self.run_cli(
+                ["genome", "show", "analyst", "--db", database, "--json"]
+            )
+            shown = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertEqual(shown["self_model"]["mission"], "Produce verified analysis")
+
+    def test_experience_distill_and_list_after_demo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = str(Path(directory) / "experience.db")
+            code, _, error = self.run_cli(
+                ["demo", "--db", database, "--goal-id", "evolve-demo", "--json"]
+            )
+            self.assertEqual((code, error), (0, ""))
+
+            code, output, error = self.run_cli(
+                ["experience", "distill", "evolve-demo", "--db", database, "--json"]
+            )
+            records = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertTrue(records)
+            self.assertTrue(any(record["lessons"] for record in records))
+
+            code, output, error = self.run_cli(
+                [
+                    "experience", "list", "--task-type", "market_analysis",
+                    "--db", database, "--json",
+                ]
+            )
+            filtered = json.loads(output)
+            self.assertEqual((code, error), (0, ""))
+            self.assertTrue(filtered)
+            self.assertTrue(all(item["task_type"] == "market_analysis" for item in filtered))
+
     def test_run_executes_json_goal_specification(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
