@@ -2,9 +2,39 @@
 
 [简体中文](README.zh-CN.md) | English
 
-An auditable Python runtime for organizing specialized AI agents around a goal. It implements goal lifecycle management, an outer planning loop, an inner execute-review-repair loop, durable memory, and performance-based agent selection.
+An auditable Python runtime that makes specialized AI agents plan, execute,
+review, repair, and improve around a shared goal without silently changing the
+acceptance criteria.
 
-The default demo is deterministic and needs no API key. You can inspect every task, review, artifact, routing decision, and state transition in SQLite.
+Run one offline command to watch an intentionally incomplete result get rejected,
+repaired, and accepted. Every task, review, artifact, routing decision, and state
+transition remains inspectable in SQLite.
+
+[![CI](https://github.com/woshishadowhunter/agent-society-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/woshishadowhunter/agent-society-loop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/woshishadowhunter/agent-society-loop)](https://github.com/woshishadowhunter/agent-society-loop/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+## Five-minute proof
+
+Requires Python 3.10 or newer.
+
+```bash
+python -m pip install https://github.com/woshishadowhunter/agent-society-loop/releases/download/v1.2.0/agent_society_loop-1.2.0-py3-none-any.whl
+agent-society demo --db demo.db
+agent-society product self-test --json
+```
+
+Expected demo result:
+
+```text
+Goal quantum-mug-demo: succeeded (4/4 tasks, 1 retries)
+```
+
+The first market report deliberately lacks evidence. The reviewer rejects it,
+the defect enters task memory, and the specialist repairs the report on its
+second attempt. See [reproducible evidence](docs/benchmark.md) for what the
+self-test proves and what the project does not yet claim.
 
 ## Why this project
 
@@ -16,7 +46,7 @@ Single-agent workflows often mix planning, execution, and evaluation in one opaq
 - **Four roles:** planner, specialist worker, reviewer, and memory manager communicate through typed interfaces.
 - **Bounded autonomy:** retries and total actions are limited, acceptance criteria cannot be silently rewritten, and every decision emits an event.
 
-## Quick start
+## Source install and inspection
 
 Requires Python 3.10 or newer.
 
@@ -25,13 +55,6 @@ git clone https://github.com/woshishadowhunter/agent-society-loop.git
 cd agent-society-loop
 python -m pip install -e .
 agent-society demo --db demo.db
-agent-society product self-test --json
-```
-
-Expected result:
-
-```text
-Goal quantum-mug-demo: succeeded (4/4 tasks, 1 retries)
 ```
 
 Inspect what happened:
@@ -41,8 +64,6 @@ agent-society status quantum-mug-demo --db demo.db --json
 agent-society events quantum-mug-demo --db demo.db
 agent-society agents --db demo.db --json
 ```
-
-The bundled scenario deliberately produces an incomplete first market report. The reviewer rejects it, the defect enters short-term memory, and the specialist repairs the report on its second attempt.
 
 `product self-test` is the v1.0 install-time acceptance command. It verifies release metadata, required operator documentation, the deterministic double-loop demo, scheduler fencing invariants, and local A2A failure-safety scenarios without needing a model API key.
 
