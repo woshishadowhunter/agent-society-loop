@@ -2,9 +2,32 @@
 
 简体中文 | [English](README.md)
 
-这是一个可审计的 Python 多智能体运行时：围绕一个目标，将规划、专业执行、质量审查和记忆管理拆成清晰角色，通过“外层目标循环 + 内层质检返工循环”持续推进，直到目标成功、失败或因预算停止。
+这是一个可审计的 Python 多智能体运行时：让专业 Agent 围绕共同目标进行规划、执行、质检、返工和经验积累，同时禁止系统偷偷修改验收标准。
 
-默认演示完全离线，不需要 API Key。目标、任务、产物、质检报告、智能体选择理由和状态变化都会写入 SQLite，方便复盘和验证。
+运行一条离线命令，就能看到一个故意不完整的结果被拒绝、修正并通过。目标、任务、产物、质检报告、选人理由和状态变化都会写入 SQLite。
+
+[![CI](https://github.com/woshishadowhunter/agent-society-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/woshishadowhunter/agent-society-loop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/woshishadowhunter/agent-society-loop)](https://github.com/woshishadowhunter/agent-society-loop/releases/latest)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+## 五分钟验证
+
+需要 Python 3.10 或更高版本。
+
+```bash
+python -m pip install https://github.com/woshishadowhunter/agent-society-loop/releases/download/v1.2.0/agent_society_loop-1.2.0-py3-none-any.whl
+agent-society demo --db demo.db
+agent-society product self-test --json
+```
+
+预期演示结果：
+
+```text
+Goal quantum-mug-demo: succeeded (4/4 tasks, 1 retries)
+```
+
+内置演示会故意让市场分析初稿缺少证据。质检 Agent 拒绝初稿，缺陷进入任务记忆，执行 Agent 在第二次尝试中修正并通过。关于自测能够证明什么、尚不能证明什么，见[可复现实证说明](docs/benchmark.md)。
 
 ## 解决什么问题
 
@@ -16,7 +39,7 @@
 - **四类角色：** 规划者、执行专家、质检者、记忆管理者通过类型化接口协作。
 - **可控进化：** 历史结果影响下一次选人，但系统不能偷偷修改源码、验收标准或安全策略。
 
-## 快速开始
+## 从源码安装与检查
 
 需要 Python 3.10 或更高版本。
 
@@ -25,13 +48,6 @@ git clone https://github.com/woshishadowhunter/agent-society-loop.git
 cd agent-society-loop
 python -m pip install -e .
 agent-society demo --db demo.db
-agent-society product self-test --json
-```
-
-预期结果：
-
-```text
-Goal quantum-mug-demo: succeeded (4/4 tasks, 1 retries)
 ```
 
 查看完整执行证据：
@@ -41,8 +57,6 @@ agent-society status quantum-mug-demo --db demo.db --json
 agent-society events quantum-mug-demo --db demo.db
 agent-society agents --db demo.db --json
 ```
-
-内置“量子咖啡杯上市材料”演示会故意让市场分析初稿少一个数据来源。质检 Agent 拒绝初稿，缺陷写入短期记忆，市场分析 Agent 在第二次执行时补齐证据并通过。
 
 `product self-test` 是 v1.0 的安装验收命令。它不需要模型 API Key，会检查发布版本、必需运维文档、确定性双循环演示、调度租约安全不变量，以及本地 A2A 故障安全场景。
 

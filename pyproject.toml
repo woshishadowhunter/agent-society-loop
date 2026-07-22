@@ -31,6 +31,7 @@ Homepage = "https://github.com/woshishadowhunter/agent-society-loop"
 Repository = "https://github.com/woshishadowhunter/agent-society-loop"
 Issues = "https://github.com/woshishadowhunter/agent-society-loop/issues"
 Documentation = "https://github.com/woshishadowhunter/agent-society-loop#readme"
+Changelog = "https://github.com/woshishadowhunter/agent-society-loop/blob/main/CHANGELOG.md"
 
 [project.scripts]
 agent-society = "agent_society_loop.cli:main"
