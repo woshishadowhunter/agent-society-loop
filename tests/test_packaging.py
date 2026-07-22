@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import tomllib
 import unittest
+from importlib.metadata import metadata
 from pathlib import Path
 
 import agent_society_loop
@@ -12,12 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class PackagingContractTests(unittest.TestCase):
     def test_project_metadata_matches_runtime_and_exposes_public_links(self) -> None:
-        metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+        package_metadata = metadata("agent-society-loop")
+        project_urls = dict(
+            entry.split(", ", 1) for entry in package_metadata.get_all("Project-URL", [])
+        )
 
-        self.assertEqual(metadata["version"], agent_society_loop.__version__)
-        self.assertEqual(metadata["license"], "MIT")
+        self.assertEqual(package_metadata["Version"], agent_society_loop.__version__)
+        self.assertEqual(package_metadata["License-Expression"], "MIT")
         self.assertEqual(
-            metadata["urls"]["Changelog"],
+            project_urls["Changelog"],
             "https://github.com/woshishadowhunter/agent-society-loop/blob/main/CHANGELOG.md",
         )
 
