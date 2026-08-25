@@ -226,6 +226,38 @@ See [Production-oriented deployment](docs/deployment.md) for PostgreSQL,
 Docker Compose, model configuration, webhook delivery, and remaining production
 boundaries.
 
+## Yogācāra architecture
+
+This project is organized by the Yogācāra (Consciousness-Only) eight-consciousness
+framework: the model's parameter space is the ālaya-vijñāna, the runtime's seven
+consciousnesses fit the user, and seed files constrain and refine agent capability
+and personality. The full doctrine mapping lives in
+[docs/yogacara-architecture.md](docs/yogacara-architecture.md), and the machine-readable
+plugin manifest is available as:
+
+```bash
+python -m agent_society_loop plugins --json
+python -m agent_society_loop plugins --describe
+```
+
+Six seed skills for DeepSeek Harness ship in [.agents/skills](.agents/skills)
+(`yogacara-society` 总纲, `yogacara-alaya` 种子库, `yogacara-manas` 个体性,
+`yogacara-mano` 双循环, `yogacara-panca` 前五识, `yogacara-sila` 戒律). DSH
+discovers and hot-loads them automatically. The optional MCP stdio bridge
+exposes the runtime as `mcp__society__*` tools; see
+[integrations/dsh/README.md](integrations/dsh/README.md).
+
+Memory and learning combine neuroscience with the seed framework — sleep replay,
+reward-prediction-error salience, Ebbinghaus decay, retrieval reconsolidation,
+and cross-goal semantic promotion (异熟). See
+[docs/memory-learning-design.md](docs/memory-learning-design.md) and try:
+
+```bash
+agent-society demo --db demo.db
+agent-society consolidate quantum-mug-demo --db demo.db            # dry-run report
+agent-society consolidate quantum-mug-demo --db demo.db --apply    # persist dynamics
+```
+
 ## Architecture
 
 ```mermaid

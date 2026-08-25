@@ -1,0 +1,33 @@
+# Example DSH profile patch layer registering the Agent Society MCP bridge.
+#
+# Apply by merging this entry into your profile's `cordis.patch.yml`
+# (e.g. C:\Users\<you>\.dsh\profiles\web\cordis.patch.yml) and restarting
+# the DSH process. HMR can hot-reload config edits, but a NEW plugin instance
+# needs a fresh composition, so restart once after adding it.
+#
+# The tools then appear to the model as:
+#   mcp__society__society_run_spec
+#   mcp__society__society_status
+#   mcp__society__society_genome_set
+#   ... (see integrations/dsh/README.md for the full list)
+#
+# `SOCIETY_PROJECT_DIR` points at this repository so the server can import the
+# package without a global pip install. Keep the path in sync with your clone.
+
+- id: mcp-society
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: society
+    transport: stdio
+    command: python
+    args:
+      - '-m'
+      - 'agent_society_loop.mcp_server'
+    env:
+      SOCIETY_PROJECT_DIR: !!js 'process.env.SOCIETY_PROJECT_DIR || "E:/项目内容/agent-society-loop"'
+      PYTHONPATH: !!js 'process.env.SOCIETY_PROJECT_DIR ? `${process.env.SOCIETY_PROJECT_DIR}/src` : "E:/项目内容/agent-society-loop/src"'
+    toolCallTimeoutMs: 300000
+    failOnStartupError: false
+    reconnect:
+      enabled: true
+      maxAttempts: 5
