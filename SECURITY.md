@@ -22,8 +22,8 @@ You should receive an acknowledgement within seven days. We will validate the re
 - Treat `--postgres-schema` as a namespace, not an authorization or tenant-isolation boundary. Use separate credentials and databases where trust boundaries differ.
 - Run the official A2A TCK outside the runtime at a reviewed pinned revision, preserve its artifact, and import only the bounded compatibility JSON.
 - Treat TCK source revision and tool version fields as operator provenance, not cryptographic proof.
-- Run `agent-society a2a doctor` before enabling remote production traffic and `agent-society a2a self-test` after transport changes.
-- Run `agent-society scheduler self-test` after changing SQLite, claim, or recovery code.
+- Run `seed-society a2a doctor` before enabling remote production traffic and `seed-society a2a self-test` after transport changes.
+- Run `seed-society scheduler self-test` after changing SQLite, claim, or recovery code.
 - Give every worker process a fresh session ID; a restarted worker must not reuse a predecessor session.
 - Renew leases before their deadline and treat `StaleClaim` as a terminal loss of local write authority.
 - Run expiry recovery with an explicit trusted UTC time and review tasks blocked for unsafe remote delegation state.

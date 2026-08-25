@@ -1,11 +1,11 @@
-# DeepSeek Harness 集成：把 Agent Society Loop 装进八识
+# DeepSeek Harness 集成：把 Seed Society 装进八识
 
 > **一键安装**：`powershell -ExecutionPolicy Bypass -File integrations\dsh\install-plugin.ps1`
-> —— 安装 `dsh-yogacara-society` 插件包（mneme 调优 + llm-deepseek 修复 +
+> —— 安装 `dsh-seed-society` 插件包（mneme 调优 + llm-deepseek 修复 +
 > MCP 桥 + 六个种子技能），详见
-> [`plugin/dsh-yogacara-society/README.md`](plugin/dsh-yogacara-society/README.md)。
+> [`plugin/dsh-seed-society/README.md`](plugin/dsh-seed-society/README.md)。
 
-本目录是把 `agent-society-loop` 作为插件体系接入 DeepSeek Harness（DSH）的
+本目录是把 `seed-society` 作为插件体系接入 DeepSeek Harness（DSH）的
 全部材料。理论总纲见 [`docs/yogacara-architecture.md`](../../docs/yogacara-architecture.md)。
 
 ## 一、种子技能（已热加载，无需重启）
@@ -34,7 +34,7 @@ powershell -ExecutionPolicy Bypass -File integrations\dsh\sync-skills.ps1
 
 ## 二、MCP 工具桥（需重启一次生效）
 
-`society_server.py`（包内路径 `agent_society_loop.mcp_server`，零依赖）把
+`society_server.py`（包内路径 `seed_society.mcp_server`，零依赖）把
 运行时暴露为 MCP stdio 工具。注册方式：把
 [`cordis.patch.example.yml`](cordis.patch.example.yml) 的条目合并进 profile
 的 `cordis.patch.yml`，然后重启 DSH。
@@ -62,7 +62,7 @@ $env:PYTHONPATH="src"
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"society_plugins","arguments":{"describe":true}}}
-'@ | python -m agent_society_loop.mcp_server
+'@ | python -m seed_society.mcp_server
 ```
 
 ## 三、dsh-mneme 记忆桥（已安装，重启 DSH 生效）
@@ -72,18 +72,18 @@ autoDream LLM 巩固 + 快照哈希/CAS/receipt 审计），已对账进
 `dsh.profile.bundles`。**重启 DSH 后**记忆库将落在 `~/.dsh/memory/`
 （`memory.db` + 五个可人工编辑的 Markdown 镜像）。
 
-与 agent-society-loop 的分工：我们出**确定性晋升门与熏习动力学**，mneme 出
+与 seed-society 的分工：我们出**确定性晋升门与熏习动力学**，mneme 出
 **会话侧现行面、人工主权镜像与 LLM 模糊仲裁**。双向桥：
 
 ```powershell
 # 下行：晋升门产出的语义知识（source:consolidation）+ 高强度 PASS 教训
-agent-society mneme sync --db society.db --mneme-dir ~/.dsh/memory [--include-experience] [--push]
+seed-society mneme sync --db society.db --mneme-dir ~/.dsh/memory [--include-experience] [--push]
 
 # 上行：mneme 的 dream 总结/人工决策 → society 知识种子（回声防护 + 去重）
-agent-society mneme import --db society.db --mneme-dir ~/.dsh/memory [--type summary] [--apply]
+seed-society mneme import --db society.db --mneme-dir ~/.dsh/memory [--type summary] [--apply]
 
 # 单命令联动：巩固 + 推送 + 遗忘联动（衰减种子 importance 跌破 3 即停止注入）
-agent-society consolidate GOAL --db society.db --mneme-dir ~/.dsh/memory --apply
+seed-society consolidate GOAL --db society.db --mneme-dir ~/.dsh/memory --apply
 ```
 
 ### autoDream 调优（2026-08-25 最终修复，已验证）

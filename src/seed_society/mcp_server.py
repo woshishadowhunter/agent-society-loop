@@ -7,13 +7,13 @@ harness model as `mcp__society__<name>`.
 Design rules (sila):
 - The server never uses a shell: every CLI argument is an argv element built
   from validated JSON input.
-- It only dispatches to the installed `agent-society` CLI / package entry
+- It only dispatches to the installed `seed-society` CLI / package entry
   point; it holds no secrets and opens no network sockets.
 - Approval-gated operations stay approval-gated: `society_approve`/`reject`
   still require the operator identity just like the CLI does.
 
 Run manually for a smoke test:
-    python -m agent_society_loop.mcp_server
+    python -m seed_society.mcp_server
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import sys
 from typing import Any
 
 SERVER_NAME = "society"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 
 _PROJECT_DIR_ENV = "SOCIETY_PROJECT_DIR"
 
@@ -345,7 +345,7 @@ def _cli_environment() -> dict[str, str]:
 
 
 def _run_cli(arguments: list[str], *, project_env: bool = False) -> dict[str, Any]:
-    command = [sys.executable, "-m", "agent_society_loop", *arguments, "--json"]
+    command = [sys.executable, "-m", "seed_society", *arguments, "--json"]
     completed = subprocess.run(
         command,
         capture_output=True,

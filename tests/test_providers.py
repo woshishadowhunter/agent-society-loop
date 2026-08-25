@@ -4,7 +4,7 @@ import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from agent_society_loop.providers import OpenAICompatibleProvider
+from seed_society.providers import OpenAICompatibleProvider
 
 
 class ProviderHandler(BaseHTTPRequestHandler):

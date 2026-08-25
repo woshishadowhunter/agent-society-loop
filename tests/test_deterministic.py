@@ -1,13 +1,13 @@
 import unittest
 
-from agent_society_loop.deterministic import (
+from seed_society.deterministic import (
     CriteriaReviewer,
     QuantumMugPlanner,
     TemplateWorker,
     build_demo_engine,
 )
-from agent_society_loop.domain import Goal, GoalStatus, Task, Verdict
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.domain import Goal, GoalStatus, Task, Verdict
+from seed_society.storage import SQLiteRepository
 
 
 class DeterministicScenarioTests(unittest.TestCase):

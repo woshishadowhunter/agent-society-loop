@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     AgentProfile,
     CandidateExecution,
     DelegationRecord,
@@ -11,7 +11,7 @@ from agent_society_loop.domain import (
     EvaluationOutcome,
     RemoteAgentRegistration,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 class A2ADomainTests(unittest.TestCase):

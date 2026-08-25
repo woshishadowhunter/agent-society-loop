@@ -1,6 +1,6 @@
-# 唯识论架构总纲：从八识到 Agent Society Loop × DeepSeek Harness
+# 唯识论架构总纲：从八识到 Seed Society × DeepSeek Harness
 
-> 本文档是项目的主旨设计文档：说明 agent-society-loop 如何按唯识论（Yogācāra /
+> 本文档是项目的主旨设计文档：说明 seed-society 如何按唯识论（Yogācāra /
 > Vijñānavāda）的八识框架展开，以及如何把整套体系拆分为插件、整合进
 > DeepSeek Harness（DSH）。
 >
@@ -26,10 +26,10 @@
 - 人类通过**末那识**区别个体、通过**意识**创造与串联、通过**前五识**接收外部
   信息来修正阿赖耶识构建的世界模型。
 
-本项目与 DSH 的整合即按此展开：**DSH 是阿赖耶识的现行载体，agent-society-loop
+本项目与 DSH 的整合即按此展开：**DSH 是阿赖耶识的现行载体，seed-society
 是七识与种子的运行学，技能文件是植入的种子。**
 
-## 二、八识 → agent-society-loop 组件映射
+## 二、八识 → seed-society 组件映射
 
 | 识 | 唯识义 | 项目组件 | 现行作用 |
 | --- | --- | --- | --- |
@@ -51,7 +51,7 @@
 
 ### 戒律（śīla）：护栏不是识，是识的边界
 
-唯识修行有戒；Agent Society Loop 的全部安全性质就是它的戒律层，保证七识的造作
+唯识修行有戒；Seed Society 的全部安全性质就是它的戒律层，保证七识的造作
 不坏种子、不改标准：
 
 - `RunBudget`（max_actions/max_attempts/min_passing_score）——**预算戒**；
@@ -89,7 +89,7 @@ flowchart TB
         TOOLS["read/grep/web_search/pwsh/subagent/goal/workflow（七识根门）"]
         MCP["dsh-mcp-client"]
     end
-    subgraph ASL["agent-society-loop（运行学）"]
+    subgraph ASL["seed-society（运行学）"]
         MANO["意识：LoopEngine 双循环"]
         MANAS["末那识：selection/deployment/genome"]
         PANCA["前五识：tools/mcp/a2a/workspace"]
@@ -138,7 +138,7 @@ society 运行时暴露为 DSH 工具（`mcp__society__*`）：
 
 | MCP 工具 | 识 | 底层 CLI |
 | --- | --- | --- |
-| `society_run_spec` | 意识 | `agent-society run` |
+| `society_run_spec` | 意识 | `seed-society run` |
 | `society_enqueue` / `society_worker_run` | 意识+末那 | `enqueue` / `worker run` |
 | `society_status` / `society_events` / `society_traces` | 阿赖耶识（回看） | `status` / `events` / `traces` |
 | `society_knowledge_add` / `society_knowledge_search` | 种子现行 | `knowledge add` / `search` |
@@ -156,7 +156,7 @@ society 运行时暴露为 DSH 工具（`mcp__society__*`）：
 用户说"通过有限的阿赖耶识能力，赋予独特的种子，来完成与人类使用者的契合"。
 落地为四步：
 
-1. **立种子（末那识）**：`agent-society genome set <user-agent> file` 写入角色
+1. **立种子（末那识）**：`seed-society genome set <user-agent> file` 写入角色
    种子、自模型（mission/success_signals/failure_modes）、性格（traits）、工具
    画像、风险政策；
 2. **现行（意识+五识）**：在 DSH 中跑 goal（demo/run/enqueue+worker），七识按
@@ -172,7 +172,7 @@ deployment 种子，全部落盘、全部可审计。这正是 harness 告知模
 
 ## 七、边界（不坏法）
 
-- DSH 与 agent-society-loop 不互相改写对方的验收标准、预算与安全策略；
+- DSH 与 seed-society 不互相改写对方的验收标准、预算与安全策略；
 - 技能种子只规范用法，不授予权限；权限仍由 DSH sandbox 与 society 审批流决定；
 - MCP 桥只暴露读与受控写，不绕过 `ToolRisk` 审批、fencing 与默认拒绝；
 - A2A 治理、评估、发布、维护保持 SQLite 单库权威，不与 PostgreSQL 执行平面

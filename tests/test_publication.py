@@ -4,12 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_society_loop.github import GitHubPullRequest
-from agent_society_loop.domain import PublicationRecord
-from agent_society_loop.publication import WorkspacePublishPullRequestTool
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import ToolContext
-from agent_society_loop.workspace_tools import WorkspaceRunCheckTool, WorkspaceWriteFileTool
+from seed_society.github import GitHubPullRequest
+from seed_society.domain import PublicationRecord
+from seed_society.publication import WorkspacePublishPullRequestTool
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import ToolContext
+from seed_society.workspace_tools import WorkspaceRunCheckTool, WorkspaceWriteFileTool
 
 
 def git(root, *arguments):
@@ -45,7 +45,7 @@ class PublicationTests(unittest.TestCase):
             subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
             git(workspace, "remote", "add", "origin", str(remote))
             git(workspace, "push", "-u", "origin", "main")
-            git(workspace, "switch", "-c", "agent-society/fix")
+            git(workspace, "switch", "-c", "seed-society/fix")
 
             repository = SQLiteRepository(root / "state.db")
             context = ToolContext("goal", "task", "agent")
@@ -81,7 +81,7 @@ class PublicationTests(unittest.TestCase):
             self.assertEqual(len(pull_requests.calls), 1)
             self.assertEqual(git(workspace, "rev-list", "--count", "main..HEAD"), "1")
             self.assertEqual(
-                git(remote, "rev-parse", "refs/heads/agent-society/fix"),
+                git(remote, "rev-parse", "refs/heads/seed-society/fix"),
                 first["commit_sha"],
             )
             self.assertEqual(repository.get_publication("goal").pull_request_number, 17)
@@ -99,7 +99,7 @@ class PublicationTests(unittest.TestCase):
             source.write_text("VALUE = 1\n", encoding="utf-8")
             git(workspace, "add", "app.py")
             git(workspace, "commit", "-qm", "initial")
-            git(workspace, "switch", "-c", "agent-society/fix")
+            git(workspace, "switch", "-c", "seed-society/fix")
             repository = SQLiteRepository(root / "state.db")
             context = ToolContext("goal", "task", "agent")
             WorkspaceWriteFileTool(workspace, repository).invoke_with_context(

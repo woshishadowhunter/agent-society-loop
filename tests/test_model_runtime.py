@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_society_loop.model_agents import ModelReviewer, ModelWorker
-from agent_society_loop.model_runtime import (
+from seed_society.model_agents import ModelReviewer, ModelWorker
+from seed_society.model_runtime import (
     ModelRuntime,
     ModelProviderConfig,
     doctor_model_runtime,

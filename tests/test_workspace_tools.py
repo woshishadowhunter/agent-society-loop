@@ -3,10 +3,10 @@ import unittest
 import hashlib
 from pathlib import Path
 
-from agent_society_loop.domain import ToolRisk
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import ToolContext
-from agent_society_loop.workspace_tools import (
+from seed_society.domain import ToolRisk
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import ToolContext
+from seed_society.workspace_tools import (
     WorkspaceDiffTool,
     WorkspaceListFilesTool,
     WorkspaceReadFileTool,

@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import replace
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     AgentProfile,
     ApprovalStatus,
     Artifact,
@@ -16,11 +16,11 @@ from agent_society_loop.domain import (
     Verdict,
     transition_goal,
 )
-from agent_society_loop.engine import LoopEngine
-from agent_society_loop.memory import MemoryManager
-from agent_society_loop.selection import PerformanceWeightedSelector
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import (
+from seed_society.engine import LoopEngine
+from seed_society.memory import MemoryManager
+from seed_society.selection import PerformanceWeightedSelector
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import (
     DefaultToolPolicy,
     ToolContext,
     ToolExecutor,

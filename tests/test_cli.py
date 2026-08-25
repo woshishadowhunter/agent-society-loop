@@ -7,15 +7,15 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_society_loop.cli import build_parser, main
-from agent_society_loop.domain import (
+from seed_society.cli import build_parser, main
+from seed_society.domain import (
     ApprovalRequest,
     ApprovalStatus,
     Goal,
     GoalStatus,
 )
-from agent_society_loop.github import GitHubIssue
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.github import GitHubIssue
+from seed_society.storage import SQLiteRepository
 
 
 class ScriptedProvider:
@@ -69,13 +69,13 @@ class CLITests(unittest.TestCase):
                 "maintain", "owner/repo", "12", "--workspace", ".", "--apply",
                 "--check", "tests=python -m unittest", "--publish",
                 "--base", "main", "--remote", "upstream",
-                "--branch-prefix", "agent-society/",
+                "--branch-prefix", "seed-society/",
             ]
         )
 
         self.assertTrue(args.publish)
         self.assertEqual(args.remote, "upstream")
-        self.assertEqual(args.branch_prefix, "agent-society/")
+        self.assertEqual(args.branch_prefix, "seed-society/")
     def run_cli(self, argv):
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -373,8 +373,8 @@ class CLITests(unittest.TestCase):
                 ]
             )
             database = str(root / "maintain.db")
-            with patch("agent_society_loop.cli.GitHubIssueClient", FakeIssueClient), patch(
-                "agent_society_loop.cli._provider_from_environment", return_value=provider
+            with patch("seed_society.cli.GitHubIssueClient", FakeIssueClient), patch(
+                "seed_society.cli._provider_from_environment", return_value=provider
             ):
                 code, output, error = self.run_cli(
                     [

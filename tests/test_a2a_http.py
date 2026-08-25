@@ -2,7 +2,7 @@ import hashlib
 import json
 import unittest
 
-from agent_society_loop.a2a import (
+from seed_society.a2a import (
     A2AAmbiguousSubmission,
     A2AHTTPClient,
     A2AHTTPError,
@@ -10,7 +10,7 @@ from agent_society_loop.a2a import (
     A2AProtocolError,
     register_remote_agent,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 from tests.a2a_fake_server import FakeA2AServer
 
 

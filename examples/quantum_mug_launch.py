@@ -1,6 +1,6 @@
 """Run the bundled deterministic scenario without installing the console script."""
 
-from agent_society_loop.cli import main
+from seed_society.cli import main
 
 
 if __name__ == "__main__":

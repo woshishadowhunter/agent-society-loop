@@ -4,7 +4,7 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     Artifact,
     Attempt,
     DelegationRecord,
@@ -18,8 +18,8 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
-from agent_society_loop.deterministic import build_demo_engine
-from agent_society_loop.scheduler import (
+from seed_society.deterministic import build_demo_engine
+from seed_society.scheduler import (
     ClaimStatus,
     TaskClaim,
     StaleClaim,
@@ -28,7 +28,7 @@ from agent_society_loop.scheduler import (
     parse_utc,
     validate_duration,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 from tests.scheduler_conformance import (
     ApprovalPauseContract,
     ClaimNextTaskContract,

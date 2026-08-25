@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a pragmatic evolution substrate to Agent Society Loop: each agent can carry a structured seed genome, and completed task attempts can be distilled into durable experience records that explain success and failure patterns without granting the system authority to rewrite its own safety rules.
+Add a pragmatic evolution substrate to Seed Society: each agent can carry a structured seed genome, and completed task attempts can be distilled into durable experience records that explain success and failure patterns without granting the system authority to rewrite its own safety rules.
 
 ## Concept Mapping
 
@@ -21,10 +21,10 @@ v1.1 implements:
 - SQLite and PostgreSQL persistence for genomes and experiences.
 - `ExperienceDistiller`, a deterministic service that turns reviewed attempts into bounded lessons.
 - CLI:
-  - `agent-society genome set AGENT_ID FILE`
-  - `agent-society genome show AGENT_ID`
-  - `agent-society experience distill GOAL_ID`
-  - `agent-society experience list [--agent-id ID] [--task-type TYPE]`
+  - `seed-society genome set AGENT_ID FILE`
+  - `seed-society genome show AGENT_ID`
+  - `seed-society experience distill GOAL_ID`
+  - `seed-society experience list [--agent-id ID] [--task-type TYPE]`
 - Context injection: future tasks receive relevant distilled experience as a bounded `experience` context section.
 
 v1.1 does not implement automatic genome recombination, mutation, autonomous promotion, or production routing changes. Those remain explicit future work.

@@ -2,18 +2,18 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     BenchmarkCase,
     CandidateExecution,
     CandidateIdentity,
     CaseEvaluation,
 )
-from agent_society_loop.evaluation import (
+from seed_society.evaluation import (
     BenchmarkEvaluator,
     PromotionPolicy,
     benchmark_digest,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 class ScriptedRunner:

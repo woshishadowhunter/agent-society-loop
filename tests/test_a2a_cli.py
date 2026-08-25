@@ -6,8 +6,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from agent_society_loop.cli import build_parser, main
-from agent_society_loop.domain import (
+from seed_society.cli import build_parser, main
+from seed_society.domain import (
     AgentProfile,
     ConformanceAttestation,
     DelegationPolicy,
@@ -17,7 +17,7 @@ from agent_society_loop.domain import (
     EvaluationRun,
     PolicyActivation,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 from tests.a2a_fake_server import FakeA2AServer
 
 
@@ -310,7 +310,7 @@ class A2ACLITests(unittest.TestCase):
 
 
 def repository_registration(server):
-    from agent_society_loop.domain import RemoteAgentRegistration
+    from seed_society.domain import RemoteAgentRegistration
 
     return RemoteAgentRegistration.create(
         "remote-a",

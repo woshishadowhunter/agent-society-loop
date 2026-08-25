@@ -14,8 +14,8 @@ worker -> execute -> review -> fenced atomic commit
 Use SQLite for multiple processes on one host:
 
 ```bash
-agent-society enqueue examples/goal-spec.json --db society.db --json
-agent-society worker run --worker-id local-a \
+seed-society enqueue examples/goal-spec.json --db society.db --json
+seed-society worker run --worker-id local-a \
   --agent-id spec-research --agent-id spec-writing \
   --max-tasks 3 --db society.db --json
 ```
@@ -24,9 +24,9 @@ Use PostgreSQL for workers on different hosts:
 
 ```bash
 python -m pip install -e ".[postgres]"
-export AGENT_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
-agent-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
-agent-society worker run --worker-id worker-a \
+export SEED_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
+seed-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
+seed-society worker run --worker-id worker-a \
   --agent-id spec-research --agent-id spec-writing \
   --max-tasks 3 --postgres-schema agent_society --json
 ```
@@ -69,18 +69,18 @@ The synchronous `LoopEngine` and legacy per-record write methods fail closed whe
 `ApprovalRequired` does not become a failed attempt. `pause_claim_for_approval` atomically persists or validates the exact approval request, releases the claim, returns the task to `pending`, pauses the goal, and emits `approval.requested`. An operator can inspect and resolve it:
 
 ```bash
-agent-society approvals GOAL_ID --db society.db --json
-agent-society approve APPROVAL_ID --by operator --db society.db --json
+seed-society approvals GOAL_ID --db society.db --json
+seed-society approve APPROVAL_ID --by operator --db society.db --json
 ```
 
-For PostgreSQL, supply `--database-url` or `AGENT_SOCIETY_DATABASE_URL` and the same `--postgres-schema`. Approval resumes the goal to `running` in the same transaction, so a daemon can claim the pending task again. Rejection moves the goal to `failed`.
+For PostgreSQL, supply `--database-url` or `SEED_SOCIETY_DATABASE_URL` and the same `--postgres-schema`. Approval resumes the goal to `running` in the same transaction, so a daemon can claim the pending task again. Rejection moves the goal to `failed`.
 
 ## Expiry Recovery
 
 Recovery is explicit and auditable:
 
 ```bash
-agent-society scheduler reap \
+seed-society scheduler reap \
   --at 2026-07-17T00:00:10+00:00 \
   --db society.db --json
 ```
@@ -107,7 +107,7 @@ The PostgreSQL adapter uses JSONB payloads plus normalized indexed scheduler col
 ## Verification And Threat Boundary
 
 ```bash
-agent-society scheduler self-test --json
+seed-society scheduler self-test --json
 ```
 
 The deterministic SQLite campaign proves exclusive claim, exact-owner renewal, monotonic takeover, stale-commit rejection with zero partial writes, and complete current-owner commit. CI runs the shared claim, dependency, ownership, expiry, session-generation, terminal reconciliation, and approval-pause contracts against PostgreSQL 17.

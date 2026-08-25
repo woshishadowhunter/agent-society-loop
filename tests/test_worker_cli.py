@@ -9,8 +9,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from agent_society_loop.cli import _open_repository, build_parser, main
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.cli import _open_repository, build_parser, main
+from seed_society.storage import SQLiteRepository
 
 
 class ModelRuntimeHandler(BaseHTTPRequestHandler):
@@ -159,7 +159,7 @@ class WorkerCLITests(unittest.TestCase):
                 postgres_schema="operations",
             )
             with self.subTest(command=command), patch(
-                "agent_society_loop.cli.PostgreSQLRepository"
+                "seed_society.cli.PostgreSQLRepository"
             ) as repository_type:
                 repository = _open_repository(args)
 

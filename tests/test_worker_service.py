@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Event as ThreadEvent, enumerate as enumerate_threads
 from pathlib import Path
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     ApprovalRequest,
     Goal,
     GoalStatus,
@@ -16,11 +16,11 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.ports import WorkerBlocked, WorkerExecution
-from agent_society_loop.scheduler import WorkerSession
-from agent_society_loop.tools import ApprovalRequired
-from agent_society_loop.worker_service import (
+from seed_society.storage import SQLiteRepository
+from seed_society.ports import WorkerBlocked, WorkerExecution
+from seed_society.scheduler import WorkerSession
+from seed_society.tools import ApprovalRequired
+from seed_society.worker_service import (
     WorkerRunStatus,
     WorkerService,
     WorkerServiceConfig,

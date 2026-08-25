@@ -1,8 +1,8 @@
 import unittest
 
-from agent_society_loop.domain import Artifact, Goal, Review, Task, Verdict
-from agent_society_loop.memory import MemoryManager
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.domain import Artifact, Goal, Review, Task, Verdict
+from seed_society.memory import MemoryManager
+from seed_society.storage import SQLiteRepository
 
 
 class MemoryManagerTests(unittest.TestCase):

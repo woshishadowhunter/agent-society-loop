@@ -6,9 +6,9 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from agent_society_loop.cli import build_parser, main
-from agent_society_loop.domain import AgentProfile, EvaluationRun
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.cli import build_parser, main
+from seed_society.domain import AgentProfile, EvaluationRun
+from seed_society.storage import SQLiteRepository
 from tests.a2a_fake_server import FakeA2AServer
 
 

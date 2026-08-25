@@ -8,7 +8,7 @@ by people who do not already know the maintainer.
 
 The repositories have different jobs:
 
-- Agent Society Loop is the flagship governed multi-agent runtime.
+- Seed Society is the flagship governed multi-agent runtime.
 - Alaya Protocol is the narrow, reusable experience-memory entry point.
 - Lianxin Medicine Garden is the real-world community operations case study.
 
@@ -21,7 +21,7 @@ change production behavior, or claim adoption that has not happened.
    Trusted Publishing workflow with no stored PyPI token.
 2. A new visitor can understand each repository's problem, differentiator, and
    first successful action from the first README screen.
-3. Agent Society Loop publishes a reproducible, deterministic evidence command
+3. Seed Society publishes a reproducible, deterministic evidence command
    and clearly distinguishes measured behavior from future benchmarks.
 4. Alaya has a GitHub-detectable Apache-2.0 license and concrete framework-neutral
    integration guidance.
@@ -40,7 +40,7 @@ Each README follows the same conversion sequence:
 4. explanation of the differentiator and limits;
 5. links to deeper architecture, security, and contribution material.
 
-Agent Society Loop keeps its detailed operational documentation, but moves it
+Seed Society keeps its detailed operational documentation, but moves it
 below the quick start and evidence sections. Alaya leads with the experience
 seed lifecycle and a five-minute command. Lianxin leads with screenshots and a
 local, synthetic-data evaluation path.
@@ -60,7 +60,7 @@ demo-data commands without converting the application to an npm package.
 ## Evidence and Community
 
 Evidence must be reproducible. Existing deterministic self-tests and evaluation
-fixtures are surfaced as the first proof for Agent Society Loop. Broader public
+fixtures are surfaced as the first proof for Seed Society. Broader public
 comparisons against other frameworks remain a follow-up issue until a neutral
 benchmark corpus and methodology exist.
 
@@ -82,7 +82,7 @@ maintainer work.
 
 ## Verification
 
-- Agent Society Loop: full `unittest` suite, compile, build, metadata check,
+- Seed Society: full `unittest` suite, compile, build, metadata check,
   wheel install, deterministic self-test.
 - Alaya Protocol: full `unittest` suite, compile, build, metadata check, wheel
   install and CLI smoke test.

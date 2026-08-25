@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import replace
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     ApprovalRequest,
     Goal,
     GoalStatus,

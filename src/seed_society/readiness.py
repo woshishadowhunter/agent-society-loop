@@ -1,4 +1,4 @@
-"""Product-level readiness checks for installed Agent Society Loop runtimes."""
+"""Product-level readiness checks for installed Seed Society runtimes."""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def run_product_readiness_self_test(
         _a2a_reliability_check(),
     ]
     return {
-        "product": "agent-society-loop",
+        "product": "seed-society",
         "version": version,
         "passed": all(check["passed"] for check in checks),
         "checks": checks,

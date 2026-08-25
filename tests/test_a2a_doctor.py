@@ -3,9 +3,9 @@ import unittest
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from agent_society_loop.a2a import A2ALimits, AgentCardInspection
-from agent_society_loop.a2a_governance import build_doctor_report
-from agent_society_loop.domain import (
+from seed_society.a2a import A2ALimits, AgentCardInspection
+from seed_society.a2a_governance import build_doctor_report
+from seed_society.domain import (
     AgentProfile,
     ConformanceAttestation,
     DelegationPolicy,
@@ -14,7 +14,7 @@ from agent_society_loop.domain import (
     PolicyActivation,
     RemoteAgentRegistration,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)

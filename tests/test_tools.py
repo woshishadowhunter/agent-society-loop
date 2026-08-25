@@ -1,8 +1,8 @@
 import unittest
 
-from agent_society_loop.domain import ApprovalStatus, ToolRisk
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import (
+from seed_society.domain import ApprovalStatus, ToolRisk
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import (
     ApprovalRequired,
     DefaultToolPolicy,
     ToolContext,
@@ -10,7 +10,7 @@ from agent_society_loop.tools import (
     ToolExecutor,
     ToolRegistry,
 )
-from agent_society_loop.tracing import TraceRecorder
+from seed_society.tracing import TraceRecorder
 
 
 class EchoTool:

@@ -5,15 +5,15 @@ import sys
 import tempfile
 import unittest
 
-from agent_society_loop.readiness import run_product_readiness_self_test
+from seed_society.readiness import run_product_readiness_self_test
 
 
 class ProductReadinessTests(unittest.TestCase):
     def test_product_readiness_report_passes_with_required_checks(self):
-        report = run_product_readiness_self_test("1.2.0")
+        report = run_product_readiness_self_test("1.3.0")
 
         self.assertTrue(report["passed"])
-        self.assertEqual(report["version"], "1.2.0")
+        self.assertEqual(report["version"], "1.3.0")
         self.assertEqual(
             [check["name"] for check in report["checks"]],
             [
@@ -61,7 +61,7 @@ class ProductReadinessTests(unittest.TestCase):
             [
                 sys.executable,
                 "-m",
-                "agent_society_loop.cli",
+                "seed_society.cli",
                 "product",
                 "self-test",
                 "--json",
@@ -73,4 +73,4 @@ class ProductReadinessTests(unittest.TestCase):
 
         report = json.loads(completed.stdout)
         self.assertTrue(report["passed"])
-        self.assertEqual(report["version"], "1.2.0")
+        self.assertEqual(report["version"], "1.3.0")

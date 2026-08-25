@@ -1,15 +1,15 @@
 import unittest
 from datetime import datetime, timezone
 
-from agent_society_loop.a2a import (
+from seed_society.a2a import (
     A2ALimits,
     A2AProtocolError,
     A2ARemoteExecutor,
     A2ARemoteWorker,
     PolicyDenied,
 )
-from agent_society_loop.a2a_governance import DelegationPolicyEvaluator
-from agent_society_loop.domain import (
+from seed_society.a2a_governance import DelegationPolicyEvaluator
+from seed_society.domain import (
     ConformanceAttestation,
     DelegationPolicy,
     DelegationRecord,
@@ -20,8 +20,8 @@ from agent_society_loop.domain import (
     RemoteAgentRegistration,
     Task,
 )
-from agent_society_loop.ports import WorkerBlocked
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.ports import WorkerBlocked
+from seed_society.storage import SQLiteRepository
 
 
 NOW = datetime(2026, 7, 16, 12, 0, tzinfo=timezone.utc)

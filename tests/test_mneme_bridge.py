@@ -6,14 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent_society_loop.domain import Goal, KnowledgeItem
-from agent_society_loop.mneme_bridge import (
+from seed_society.domain import Goal, KnowledgeItem
+from seed_society.mneme_bridge import (
     MNEME_SOURCE_PREFIX,
     import_seeds,
     push_seeds,
     resolve_mneme_dir,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 class MnemePushTests(unittest.TestCase):
@@ -103,7 +103,7 @@ class MnemePushTests(unittest.TestCase):
         )
 
     def test_include_experience_pushes_strong_lessons(self):
-        from agent_society_loop.domain import ExperienceRecord, utc_now
+        from seed_society.domain import ExperienceRecord, utc_now
 
         self.repository.save_experience(
             ExperienceRecord(
@@ -142,7 +142,7 @@ class MnemePushTests(unittest.TestCase):
     def test_decay_linkage_lowers_importance_below_injection_threshold(self):
         """遗忘=停止现行: a decayed seed drops importance so mneme stops
         injecting it — even without --include-experience on the refresh pass."""
-        from agent_society_loop.domain import ExperienceRecord, utc_now
+        from seed_society.domain import ExperienceRecord, utc_now
 
         self.repository.save_experience(
             ExperienceRecord(
@@ -216,7 +216,7 @@ class MnemeImportTests(unittest.TestCase):
         self.temp.cleanup()
 
     def _seed_mneme_rows(self):
-        from agent_society_loop.mneme_bridge import _connect
+        from seed_society.mneme_bridge import _connect
 
         connection = _connect(self.mneme_dir / "memory.db", create=True)
         try:
@@ -236,7 +236,7 @@ class MnemeImportTests(unittest.TestCase):
                     "project",
                     "echo",
                     "should be excluded",
-                    json.dumps(["agent-society"]),
+                    json.dumps(["seed-society"]),
                     4,
                     f"{MNEME_SOURCE_PREFIX}knowledge-1",
                     "2026-08-14T00:00:00.000Z",

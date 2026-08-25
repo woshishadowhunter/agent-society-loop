@@ -1,8 +1,8 @@
 import json
 import unittest
 
-from agent_society_loop.a2a import A2ALimits
-from agent_society_loop.a2a_reliability import run_reliability_campaign
+from seed_society.a2a import A2ALimits
+from seed_society.a2a_reliability import run_reliability_campaign
 
 
 class BrokenClient:

@@ -127,7 +127,7 @@ def build_maintenance_engine(
     github_repository: str = "",
     base_branch: str = "main",
     remote: str = "origin",
-    branch_prefix: str = "agent-society/",
+    branch_prefix: str = "seed-society/",
     max_actions: int = 30,
     max_tool_steps: int = 12,
 ) -> LoopEngine:
@@ -225,7 +225,7 @@ def create_maintenance_goal(
     publish: bool = False,
     base_branch: str = "main",
     remote: str = "origin",
-    branch_prefix: str = "agent-society/",
+    branch_prefix: str = "seed-society/",
 ) -> Goal:
     if apply:
         if workspace is None:
@@ -317,7 +317,7 @@ def maintenance_publication_configuration(goal: Goal) -> dict[str, object]:
         "enabled": publication.get("enabled", False),
         "base_branch": publication.get("base_branch", "main"),
         "remote": publication.get("remote", "origin"),
-        "branch_prefix": publication.get("branch_prefix", "agent-society/"),
+        "branch_prefix": publication.get("branch_prefix", "seed-society/"),
     }
 
 

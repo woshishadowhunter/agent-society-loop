@@ -33,7 +33,10 @@ from typing import Any, Sequence
 from .domain import Event, ExperienceRecord, KnowledgeItem
 from .storage import SQLiteRepository
 
-MNEME_SOURCE_PREFIX = "agent-society-loop:"
+MNEME_SOURCE_PREFIX = "seed-society:"
+# Provenance prefixes written by earlier versions; refresh and echo-protection
+# still match them so renamed rows never orphan or leak into import.
+LEGACY_SOURCE_PREFIXES = ("agent-society-loop:",)
 
 # Injection-gate equivalence: mneme's default importance threshold is 3, and
 # importance = ceil(strength * 5), so strength 0.5 is exactly the boundary at
@@ -140,8 +143,11 @@ def _refresh_decayed_experience(
     under the push threshold still converge.
     """
     rows = connection.execute(
-        "SELECT id, source, importance FROM memories WHERE source LIKE ?",
-        (f"{MNEME_SOURCE_PREFIX}experience-%",),
+        "SELECT id, source, importance FROM memories WHERE source LIKE ? OR source LIKE ?",
+        (
+            f"{MNEME_SOURCE_PREFIX}experience-%",
+            f"{LEGACY_SOURCE_PREFIXES[0]}experience-%",
+        ),
     ).fetchall()
     if not rows:
         return 0
@@ -149,7 +155,11 @@ def _refresh_decayed_experience(
     now = _now_iso()
     refreshed = 0
     for row_id, source, importance in rows:
-        experience_id = str(source)[len(MNEME_SOURCE_PREFIX):]
+        experience_id = str(source)
+        for prefix in (MNEME_SOURCE_PREFIX, *LEGACY_SOURCE_PREFIXES):
+            if experience_id.startswith(prefix):
+                experience_id = experience_id[len(prefix):]
+                break
         record = by_id.get(experience_id)
         if record is None:
             continue
@@ -187,7 +197,7 @@ def push_seeds(
                     "title": item.title,
                     "content": item.content,
                     "importance": 4,
-                    "tags": sorted({*item.tags, "agent-society"}),
+                    "tags": sorted({*item.tags, "seed-society"}),
                     "source": f"{MNEME_SOURCE_PREFIX}{item.knowledge_id}",
                 }
             )
@@ -207,7 +217,7 @@ def push_seeds(
                 "title": f"{record.task_type} 成功模式",
                 "content": record.lessons[0],
                 "importance": max(1, min(5, math.ceil(record.strength * 5))),
-                "tags": sorted({record.task_type, "pattern:success", "agent-society"}),
+                "tags": sorted({record.task_type, "pattern:success", "seed-society"}),
                 "source": f"{MNEME_SOURCE_PREFIX}{record.experience_id}",
             }
             key = (entry["title"], entry["content"])
@@ -333,9 +343,9 @@ def import_seeds(
         query = (
             "SELECT id, type, title, content, tags, importance, source, updated_at "
             "FROM memories WHERE forgotten=0 AND archived=0 "
-            "AND (source IS NULL OR source NOT LIKE ?) "
+            "AND (source IS NULL OR (source NOT LIKE ? AND source NOT LIKE ?)) "
         )
-        parameters: list[Any] = [f"{MNEME_SOURCE_PREFIX}%"]
+        parameters: list[Any] = [f"{MNEME_SOURCE_PREFIX}%", f"{LEGACY_SOURCE_PREFIXES[0]}%"]
         if memory_type is not None:
             query += " AND type=?"
             parameters.append(memory_type)

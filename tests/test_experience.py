@@ -1,6 +1,6 @@
 import unittest
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     AgentGenome,
     AgentSelfModel,
     Artifact,
@@ -11,9 +11,9 @@ from agent_society_loop.domain import (
     Task,
     Verdict,
 )
-from agent_society_loop.experience import ExperienceDistiller
-from agent_society_loop.memory import MemoryManager
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.experience import ExperienceDistiller
+from seed_society.memory import MemoryManager
+from seed_society.storage import SQLiteRepository
 
 
 class AgentGenomeExperienceTests(unittest.TestCase):

@@ -1,14 +1,14 @@
 import unittest
 from datetime import datetime, timezone
 
-from agent_society_loop.a2a import (
+from seed_society.a2a import (
     A2ABenchmarkRunner,
     A2AHTTPClient,
     A2ALimits,
     A2ARemoteExecutor,
 )
-from agent_society_loop.a2a_governance import DelegationPolicyEvaluator
-from agent_society_loop.domain import (
+from seed_society.a2a_governance import DelegationPolicyEvaluator
+from seed_society.domain import (
     BenchmarkCase,
     CandidateIdentity,
     ConformanceAttestation,
@@ -17,7 +17,7 @@ from agent_society_loop.domain import (
     PolicyActivation,
     RemoteAgentRegistration,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 from tests.a2a_fake_server import FakeA2AServer
 
 

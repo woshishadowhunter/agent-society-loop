@@ -1,6 +1,6 @@
 # JSON Goal Specification
 
-`agent-society run` accepts a UTF-8 JSON object.
+`seed-society run` accepts a UTF-8 JSON object.
 
 ## Goal fields
 
@@ -43,8 +43,8 @@ Any failed category creates a structured defect. A task passes only when no defe
 See [`examples/goal-spec.json`](../examples/goal-spec.json). Validate it by running:
 
 ```bash
-agent-society run examples/goal-spec.json --db evidence.db --json
-agent-society events evidence-brief-demo --db evidence.db
+seed-society run examples/goal-spec.json --db evidence.db --json
+seed-society events evidence-brief-demo --db evidence.db
 ```
 
 Task IDs must be unique, dependencies must exist, and the dependency graph must be acyclic. Invalid plans fail before any worker executes.

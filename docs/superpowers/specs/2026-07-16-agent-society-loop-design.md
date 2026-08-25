@@ -1,8 +1,8 @@
-# Agent Society Loop Design
+# Seed Society Design
 
 ## 1. Purpose
 
-Agent Society Loop is an auditable Python runtime for coordinating specialized AI agents around a goal. It turns the "Agent Society" blueprint into a durable execution system with goal lifecycle management, an outer planning loop, an inner execution-review loop, three memory scopes, performance-based agent selection, and deterministic offline examples.
+Seed Society is an auditable Python runtime for coordinating specialized AI agents around a goal. It turns the "Agent Society" blueprint into a durable execution system with goal lifecycle management, an outer planning loop, an inner execution-review loop, three memory scopes, performance-based agent selection, and deterministic offline examples.
 
 The project must be useful without an API key, while exposing stable protocols for real model and tool adapters. "Self-evolution" means improving future routing decisions from recorded outcomes. It never means silently rewriting source code, prompts, acceptance criteria, or safety policy.
 
@@ -118,12 +118,12 @@ No memory entry can override engine budgets, task acceptance criteria, or safety
 
 ## 10. CLI Experience
 
-- `agent-society demo --db PATH`: seed deterministic agents and knowledge, run the bundled scenario, and print the final report.
-- `agent-society run SPEC.json --db PATH`: create and run a goal from JSON using the deterministic adapter in v0.1.
-- `agent-society status GOAL_ID --db PATH [--json]`: inspect goal, task, attempt, and artifact summaries.
-- `agent-society events GOAL_ID --db PATH [--json]`: inspect the ordered audit trail.
-- `agent-society agents --db PATH [--json]`: inspect profiles and performance.
-- `agent-society knowledge add|search ...`: manage long-term seed knowledge.
+- `seed-society demo --db PATH`: seed deterministic agents and knowledge, run the bundled scenario, and print the final report.
+- `seed-society run SPEC.json --db PATH`: create and run a goal from JSON using the deterministic adapter in v0.1.
+- `seed-society status GOAL_ID --db PATH [--json]`: inspect goal, task, attempt, and artifact summaries.
+- `seed-society events GOAL_ID --db PATH [--json]`: inspect the ordered audit trail.
+- `seed-society agents --db PATH [--json]`: inspect profiles and performance.
+- `seed-society knowledge add|search ...`: manage long-term seed knowledge.
 
 Commands return non-zero exit codes for invalid input, failed goals, missing records, and provider failures.
 

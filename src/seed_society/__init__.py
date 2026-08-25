@@ -1,4 +1,4 @@
-"""Agent Society Loop public package."""
+"""Seed Society public package."""
 
 from .a2a import (
     A2AAmbiguousSubmission,
@@ -159,4 +159,4 @@ __all__ = [
     "WorkerServiceConfig",
 ]
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"

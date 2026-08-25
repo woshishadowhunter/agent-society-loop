@@ -12,10 +12,10 @@ configuration file.
 
 ```bash
 export LOCAL_MODEL_API_KEY="replace-with-a-model-token"
-agent-society model doctor examples/local-model-agents.json --json
-export AGENT_SOCIETY_DATABASE_URL="postgresql://user:password@db/agents"
-agent-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
-agent-society worker run \
+seed-society model doctor examples/local-model-agents.json --json
+export SEED_SOCIETY_DATABASE_URL="postgresql://user:password@db/agents"
+seed-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
+seed-society worker run \
   --worker-id local-model-worker \
   --model-config examples/local-model-agents.json \
   --postgres-schema agent_society --json
@@ -31,7 +31,7 @@ edit the example model name:
 
 ```bash
 export POSTGRES_PASSWORD="replace-with-a-secret"
-export AGENT_SOCIETY_DATABASE_URL="postgresql://agent_society:URL_ENCODED_PASSWORD@postgres:5432/agent_society"
+export SEED_SOCIETY_DATABASE_URL="postgresql://agent_society:URL_ENCODED_PASSWORD@postgres:5432/agent_society"
 export LOCAL_MODEL_API_KEY="replace-with-a-model-token"
 export WEBHOOK_URL="https://integrations.example/events"
 export WEBHOOK_TOKEN="replace-with-a-webhook-token"
@@ -46,7 +46,7 @@ docker compose --profile dispatcher up -d dispatcher
 ```
 
 `POSTGRES_PASSWORD` is the raw server password.
-`AGENT_SOCIETY_DATABASE_URL` is a separate client DSN whose password component
+`SEED_SOCIETY_DATABASE_URL` is a separate client DSN whose password component
 must be percent-encoded. Keeping them separate avoids corrupting URLs when the
 raw password contains `@`, `:`, `/`, or `%`.
 
@@ -60,16 +60,16 @@ Non-loopback production endpoints should use HTTPS and remove that opt-in.
 ## Operations
 
 ```bash
-agent-society health --postgres-schema agent_society --json
-agent-society metrics --postgres-schema agent_society --json
-agent-society outbox list --postgres-schema agent_society --json
-agent-society outbox dispatch \
+seed-society health --postgres-schema agent_society --json
+seed-society metrics --postgres-schema agent_society --json
+seed-society outbox list --postgres-schema agent_society --json
+seed-society outbox dispatch \
   --worker-id webhook-a \
   --topic webhook \
   --webhook-url https://integrations.example/events \
   --token-env WEBHOOK_TOKEN \
   --watch --postgres-schema agent_society --json
-agent-society outbox purge \
+seed-society outbox purge \
   --before 2026-06-01T00:00:00Z \
   --limit 1000 --postgres-schema agent_society --json
 ```

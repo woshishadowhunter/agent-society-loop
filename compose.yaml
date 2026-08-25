@@ -21,7 +21,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      AGENT_SOCIETY_DATABASE_URL: ${AGENT_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
+      SEED_SOCIETY_DATABASE_URL: ${SEED_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
       LOCAL_MODEL_API_KEY: ${LOCAL_MODEL_API_KEY:?set LOCAL_MODEL_API_KEY}
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -41,7 +41,7 @@ services:
       test:
         [
           "CMD",
-          "agent-society",
+          "seed-society",
           "health",
           "--worker-id",
           "local-model-worker",
@@ -62,7 +62,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      AGENT_SOCIETY_DATABASE_URL: ${AGENT_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
+      SEED_SOCIETY_DATABASE_URL: ${SEED_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
       WEBHOOK_TOKEN: ${WEBHOOK_TOKEN:?set WEBHOOK_TOKEN}
     command:
       - outbox
@@ -88,7 +88,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      AGENT_SOCIETY_DATABASE_URL: ${AGENT_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
+      SEED_SOCIETY_DATABASE_URL: ${SEED_SOCIETY_DATABASE_URL:?set an encoded PostgreSQL URL}
       LOCAL_MODEL_API_KEY: ${LOCAL_MODEL_API_KEY:?set LOCAL_MODEL_API_KEY}
     extra_hosts:
       - host.docker.internal:host-gateway

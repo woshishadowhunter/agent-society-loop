@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     ApprovalRequest,
     ApprovalStatus,
     Artifact,
@@ -19,8 +19,8 @@ from agent_society_loop.domain import (
     Verdict,
     transition_goal,
 )
-from agent_society_loop.engine import resolve_approval
-from agent_society_loop.scheduler import (
+from seed_society.engine import resolve_approval
+from seed_society.scheduler import (
     ClaimStatus,
     StaleClaim,
     WorkerSession,

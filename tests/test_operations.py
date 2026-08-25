@@ -1,16 +1,16 @@
 import unittest
 from dataclasses import replace
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     ApprovalRequest,
     Goal,
     GoalStatus,
     OutboxMessage,
     Task,
 )
-from agent_society_loop.operations import collect_health, collect_metrics
-from agent_society_loop.scheduler import WorkerSession
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.operations import collect_health, collect_metrics
+from seed_society.scheduler import WorkerSession
+from seed_society.storage import SQLiteRepository
 
 
 AT = "2026-07-17T00:00:00+00:00"

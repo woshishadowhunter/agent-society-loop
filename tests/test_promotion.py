@@ -1,6 +1,6 @@
 import unittest
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     AgentProfile,
     Artifact,
     EvaluationRun,
@@ -11,10 +11,10 @@ from agent_society_loop.domain import (
     Task,
     Verdict,
 )
-from agent_society_loop.engine import LoopEngine
-from agent_society_loop.memory import MemoryManager
-from agent_society_loop.selection import PerformanceWeightedSelector
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.engine import LoopEngine
+from seed_society.memory import MemoryManager
+from seed_society.selection import PerformanceWeightedSelector
+from seed_society.storage import SQLiteRepository
 
 
 def evaluation_run(*, recommended=True, champion="champion", challenger="challenger"):

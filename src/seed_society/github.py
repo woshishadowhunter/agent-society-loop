@@ -55,7 +55,7 @@ class GitHubIssueClient:
             raise ValueError("issue number must be positive")
         headers = {
             "Accept": "application/vnd.github+json",
-            "User-Agent": "agent-society-loop/0.6",
+            "User-Agent": "seed-society/0.6",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         if self._token:
@@ -143,7 +143,7 @@ class GitHubPullRequestClient:
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
-                "User-Agent": "agent-society-loop/0.6",
+                "User-Agent": "seed-society/0.6",
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         )

@@ -5,8 +5,8 @@ Thanks for helping make agent orchestration more testable and transparent.
 ## Setup
 
 ```bash
-git clone https://github.com/woshishadowhunter/agent-society-loop.git
-cd agent-society-loop
+git clone https://github.com/woshishadowhunter/seed-society.git
+cd seed-society
 python -m pip install -e .
 python -m unittest discover -s tests -v
 ```

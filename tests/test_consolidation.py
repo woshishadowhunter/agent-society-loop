@@ -2,21 +2,21 @@
 
 import unittest
 
-from agent_society_loop.consolidation import (
+from seed_society.consolidation import (
     EXPERIENCE_DORMANT_THRESHOLD,
     ConsolidationEngine,
     ConsolidationPolicy,
     decay_factor,
 )
-from agent_society_loop.deterministic import build_demo_engine
-from agent_society_loop.domain import (
+from seed_society.deterministic import build_demo_engine
+from seed_society.domain import (
     ExperienceRecord,
     Goal,
     Task,
     utc_now,
 )
-from agent_society_loop.memory import MemoryManager
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.memory import MemoryManager
+from seed_society.storage import SQLiteRepository
 
 
 class ConsolidationPolicyTests(unittest.TestCase):
@@ -109,7 +109,7 @@ class ExperienceDynamicsTests(unittest.TestCase):
             self._record(strength=-0.1)
 
     def test_content_identity_is_independent_of_dynamics(self):
-        from agent_society_loop.domain import Artifact, Review, Verdict
+        from seed_society.domain import Artifact, Review, Verdict
 
         review = Review.create("g1", "t1", 1, Verdict.PASS, 95, [], "fine")
         artifact = Artifact.create("g1", "t1", "agent-a", "content")

@@ -1,6 +1,6 @@
 # MCP Tool Integration
 
-Agent Society Loop v0.5 supports the stable MCP `2025-11-25` protocol over
+Seed Society v0.5 supports the stable MCP `2025-11-25` protocol over
 stdio. The client implements `initialize`, `notifications/initialized`,
 paginated `tools/list`, and `tools/call`.
 
@@ -22,9 +22,9 @@ paginated `tools/list`, and `tools/call`.
 ## Library example
 
 ```python
-from agent_society_loop.domain import ToolRisk
-from agent_society_loop.mcp import MCPStdioClient, discover_mcp_tools
-from agent_society_loop.tools import ToolRegistry
+from seed_society.domain import ToolRisk
+from seed_society.mcp import MCPStdioClient, discover_mcp_tools
+from seed_society.tools import ToolRegistry
 
 with MCPStdioClient(("python", "my_server.py")) as client:
     client.initialize()

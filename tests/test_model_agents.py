@@ -1,14 +1,14 @@
 import unittest
 
-from agent_society_loop.domain import Goal, Task, ToolRisk, Verdict
-from agent_society_loop.model_agents import (
+from seed_society.domain import Goal, Task, ToolRisk, Verdict
+from seed_society.model_agents import (
     ModelPlanner,
     ModelReviewer,
     ModelWorker,
     parse_json_object,
 )
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import (
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import (
     DefaultToolPolicy,
     ToolExecutor,
     ToolRegistry,

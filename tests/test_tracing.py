@@ -1,8 +1,8 @@
 import unittest
 
-from agent_society_loop.domain import SpanStatus
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tracing import TraceRecorder
+from seed_society.domain import SpanStatus
+from seed_society.storage import SQLiteRepository
+from seed_society.tracing import TraceRecorder
 
 
 class TraceRecorderTests(unittest.TestCase):

@@ -2,16 +2,16 @@ import sys
 import textwrap
 import unittest
 
-from agent_society_loop.domain import ToolRisk
-from agent_society_loop.mcp import (
+from seed_society.domain import ToolRisk
+from seed_society.mcp import (
     MCPError,
     MCPProtocolError,
     MCPStdioClient,
     MCPTimeoutError,
     discover_mcp_tools,
 )
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import (
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import (
     ApprovalRequired,
     DefaultToolPolicy,
     ToolContext,

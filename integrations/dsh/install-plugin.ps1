@@ -1,11 +1,11 @@
-# Install dsh-yogacara-society into a DSH profile (one command).
+# Install dsh-seed-society into a DSH profile (one command).
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File integrations\dsh\install-plugin.ps1
 #   powershell -ExecutionPolicy Bypass -File integrations\dsh\install-plugin.ps1 -Profile headless
 #
 # Steps:
-#   1. install the agent-society-loop Python package (editable, from this repo)
+#   1. install the seed-society Python package (editable, from this repo)
 #   2. ensure @modusensus/dsh-mneme is installed (prerequisite of the patch)
 #   3. add this plugin bundle to the profile (pnpm add + bundles reconcile)
 #   4. mirror the six yogacara seed skills into ~/.dsh/skills
@@ -24,7 +24,7 @@ $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 }
-$pluginDir = Join-Path $PSScriptRoot "plugin\dsh-yogacara-society"
+$pluginDir = Join-Path $PSScriptRoot "plugin\dsh-seed-society"
 $dshHome = if ($env:DSH_HOME) { $env:DSH_HOME } else { Join-Path $env:USERPROFILE ".dsh" }
 
 function Resolve-DshBin {
@@ -54,7 +54,7 @@ function Invoke-Dsh([string[]]$DshArgs) {
     return $LASTEXITCODE
 }
 
-Write-Host "[1/5] installing agent-society-loop python package (editable)..."
+Write-Host "[1/5] installing seed-society python package (editable)..."
 python -m pip install -e $RepoRoot --quiet
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 Write-Host "      ok"
@@ -69,7 +69,7 @@ if (-not $manifest.dependencies.PSObject.Properties.Name -contains "@modusensus/
     Write-Host "      already present"
 }
 
-Write-Host "[3/5] adding dsh-yogacara-society bundle..."
+Write-Host "[3/5] adding dsh-seed-society bundle..."
 Invoke-Dsh @("plugin", "--profile", $Profile, "add", $pluginDir) | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "plugin add failed" }
 Write-Host "      ok"

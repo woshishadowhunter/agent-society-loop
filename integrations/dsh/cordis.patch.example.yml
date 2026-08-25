@@ -22,10 +22,10 @@
     command: python
     args:
       - '-m'
-      - 'agent_society_loop.mcp_server'
+      - 'seed_society.mcp_server'
     env:
-      SOCIETY_PROJECT_DIR: !!js 'process.env.SOCIETY_PROJECT_DIR || "E:/项目内容/agent-society-loop"'
-      PYTHONPATH: !!js 'process.env.SOCIETY_PROJECT_DIR ? `${process.env.SOCIETY_PROJECT_DIR}/src` : "E:/项目内容/agent-society-loop/src"'
+      SOCIETY_PROJECT_DIR: !!js 'process.env.SOCIETY_PROJECT_DIR || "E:/项目内容/seed-society"'
+      PYTHONPATH: !!js 'process.env.SOCIETY_PROJECT_DIR ? `${process.env.SOCIETY_PROJECT_DIR}/src` : "E:/项目内容/seed-society/src"'
     toolCallTimeoutMs: 300000
     failOnStartupError: false
     reconnect:

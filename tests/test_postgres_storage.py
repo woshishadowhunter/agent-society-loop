@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 from uuid import uuid4
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     Artifact,
     Attempt,
     Event,
@@ -18,8 +18,8 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
-from agent_society_loop.postgres_storage import PostgreSQLRepository
-from agent_society_loop.scheduler import ClaimStatus, WorkerSession
+from seed_society.postgres_storage import PostgreSQLRepository
+from seed_society.scheduler import ClaimStatus, WorkerSession
 from tests.scheduler_conformance import (
     ApprovalPauseContract,
     ClaimNextTaskContract,
@@ -61,7 +61,7 @@ class PostgreSQLTimeTests(PostgreSQLContractBase, unittest.TestCase):
     def test_scheduler_now_uses_postgresql_clock(self):
         from datetime import datetime, timezone
 
-        from agent_society_loop.scheduler import parse_utc
+        from seed_society.scheduler import parse_utc
 
         difference = abs(
             (

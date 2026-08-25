@@ -2,7 +2,7 @@
 
 ## Design boundary
 
-Agent Society Loop is an auditable orchestration runtime. Its job is to make planning, routing, execution, review, memory, ownership, and stopping conditions explicit. The synchronous engine and complete governance plane use SQLite; the worker execution plane can use either same-host SQLite or multi-host PostgreSQL. Model intelligence remains behind injected protocols.
+Seed Society is an auditable orchestration runtime. Its job is to make planning, routing, execution, review, memory, ownership, and stopping conditions explicit. The synchronous engine and complete governance plane use SQLite; the worker execution plane can use either same-host SQLite or multi-host PostgreSQL. Model intelligence remains behind injected protocols.
 
 ## Module map
 

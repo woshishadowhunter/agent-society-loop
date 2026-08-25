@@ -1,13 +1,13 @@
 # Reproducible Evidence
 
-Agent Society Loop separates install-time safety evidence from model-quality
+Seed Society separates install-time safety evidence from model-quality
 benchmarks. The commands below are deterministic, offline, and require no API
 key.
 
 ## Product self-test
 
 ```bash
-agent-society product self-test --json
+seed-society product self-test --json
 ```
 
 This checks release metadata, required operator documentation, one complete
@@ -20,8 +20,8 @@ those contracts on the current machine. It does not measure LLM quality.
 Run the bundled evaluation fixture from a source checkout:
 
 ```bash
-agent-society evaluate examples/evaluation-spec.json --db benchmark.db --json
-agent-society evaluations --db benchmark.db --json
+seed-society evaluate examples/evaluation-spec.json --db benchmark.db --json
+seed-society evaluations --db benchmark.db --json
 ```
 
 The fixture demonstrates the decision mechanics: immutable case outcomes,

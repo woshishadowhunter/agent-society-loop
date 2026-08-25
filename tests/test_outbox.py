@@ -8,14 +8,14 @@ from contextlib import redirect_stderr, redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from agent_society_loop.cli import main
-from agent_society_loop.domain import OutboxMessage, OutboxStatus
-from agent_society_loop.outbox import (
+from seed_society.cli import main
+from seed_society.domain import OutboxMessage, OutboxStatus
+from seed_society.outbox import (
     OutboxDispatcher,
     OutboxDispatchStatus,
     WebhookOutboxHandler,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 AT = "2026-07-17T00:00:00+00:00"

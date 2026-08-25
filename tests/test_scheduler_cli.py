@@ -6,10 +6,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 
-from agent_society_loop.cli import build_parser, main
-from agent_society_loop.domain import Goal, GoalStatus, Task
-from agent_society_loop.scheduler import WorkerSession
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.cli import build_parser, main
+from seed_society.domain import Goal, GoalStatus, Task
+from seed_society.scheduler import WorkerSession
+from seed_society.storage import SQLiteRepository
 
 
 AT = "2026-07-16T00:00:00+00:00"

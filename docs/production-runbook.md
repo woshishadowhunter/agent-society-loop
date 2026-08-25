@@ -1,6 +1,6 @@
 # Production Runbook
 
-This runbook defines the minimum operating procedure for Agent Society Loop
+This runbook defines the minimum operating procedure for Seed Society
 v1.0. It assumes PostgreSQL for multi-host execution and an operator-managed
 OpenAI-compatible model endpoint.
 
@@ -9,8 +9,8 @@ OpenAI-compatible model endpoint.
 Install the package and run the product readiness check:
 
 ```bash
-python -m pip install agent-society-loop
-agent-society product self-test --json
+python -m pip install seed-society
+seed-society product self-test --json
 ```
 
 The report must return `"passed": true`. It proves the deterministic goal loop,
@@ -32,8 +32,8 @@ and inspection commands across SQLite and PostgreSQL.
 SQLite is supported for local single-host operation:
 
 ```bash
-agent-society enqueue examples/goal-spec.json --db society.db --json
-agent-society worker run --worker-id worker-a \
+seed-society enqueue examples/goal-spec.json --db society.db --json
+seed-society worker run --worker-id worker-a \
   --agent-id spec-research --agent-id spec-writing \
   --max-tasks 3 --db society.db --json
 ```
@@ -41,9 +41,9 @@ agent-society worker run --worker-id worker-a \
 PostgreSQL is the production choice for multi-host workers:
 
 ```bash
-export AGENT_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
-agent-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
-agent-society worker run --worker-id worker-a \
+export SEED_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
+seed-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
+seed-society worker run --worker-id worker-a \
   --agent-id spec-research --agent-id spec-writing \
   --max-tasks 3 --postgres-schema agent_society --json
 ```
@@ -57,7 +57,7 @@ Keep bearer tokens in environment variables, not in JSON config:
 
 ```bash
 export LOCAL_MODEL_API_KEY="replace-with-a-model-token"
-agent-society model doctor examples/local-model-agents.json --json
+seed-society model doctor examples/local-model-agents.json --json
 ```
 
 Only start workers after the doctor passes. The worker records endpoint-bound
@@ -65,7 +65,7 @@ model identities and fails closed if an existing agent ID changes model or task
 ownership.
 
 ```bash
-agent-society worker run --worker-id model-worker-a \
+seed-society worker run --worker-id model-worker-a \
   --model-config examples/local-model-agents.json \
   --postgres-schema agent_society --json
 ```
@@ -79,16 +79,16 @@ code below Python.
 Use bounded health and metrics snapshots for operations:
 
 ```bash
-agent-society health --postgres-schema agent_society --json
-agent-society metrics --postgres-schema agent_society --json
-agent-society scheduler workers --postgres-schema agent_society --json
-agent-society scheduler claims --postgres-schema agent_society --json
+seed-society health --postgres-schema agent_society --json
+seed-society metrics --postgres-schema agent_society --json
+seed-society scheduler workers --postgres-schema agent_society --json
+seed-society scheduler claims --postgres-schema agent_society --json
 ```
 
 If a worker dies, expired local work can be recovered explicitly:
 
 ```bash
-agent-society scheduler reap \
+seed-society scheduler reap \
   --at 2026-07-17T00:00:00Z \
   --postgres-schema agent_society --json
 ```
@@ -97,7 +97,7 @@ Ambiguous or interrupted remote A2A work blocks instead of replaying an unsafe
 submission. Inspect the delegation before taking operator action:
 
 ```bash
-agent-society a2a delegations --db society.db --json
+seed-society a2a delegations --db society.db --json
 ```
 
 ## 5. Outbox Delivery
@@ -107,7 +107,7 @@ a topic-bound worker:
 
 ```bash
 export WEBHOOK_TOKEN="replace-with-a-webhook-token"
-agent-society outbox dispatch \
+seed-society outbox dispatch \
   --worker-id webhook-a \
   --topic webhook \
   --webhook-url https://integrations.example/events \
@@ -122,8 +122,8 @@ system exactly once.
 Inspect and prune bounded history:
 
 ```bash
-agent-society outbox list --status failed --postgres-schema agent_society --json
-agent-society outbox purge \
+seed-society outbox list --status failed --postgres-schema agent_society --json
+seed-society outbox purge \
   --before 2026-06-01T00:00:00Z \
   --limit 1000 --postgres-schema agent_society --json
 ```
@@ -136,8 +136,8 @@ Before upgrading:
 2. Stop workers and wait for active claims to drain.
 3. Back up PostgreSQL or the SQLite database files.
 4. Install the new package.
-5. Run `agent-society product self-test --json`.
-6. Run `agent-society health --json` against the target database.
+5. Run `seed-society product self-test --json`.
+6. Run `seed-society health --json` against the target database.
 7. Restart workers, then dispatchers.
 
 Do not reuse a production schema for experiments with model identities,

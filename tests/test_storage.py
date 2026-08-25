@@ -5,8 +5,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 
-from agent_society_loop import __version__
-from agent_society_loop.domain import (
+from seed_society import __version__
+from seed_society.domain import (
     AgentProfile,
     ApprovalRequest,
     ApprovalStatus,
@@ -26,13 +26,13 @@ from agent_society_loop.domain import (
     Verdict,
     WorkspaceSnapshot,
 )
-from agent_society_loop.scheduler import parse_utc
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.scheduler import parse_utc
+from seed_society.storage import SQLiteRepository
 
 
 class SQLiteRepositoryTests(unittest.TestCase):
     def test_public_version_matches_release(self):
-        self.assertEqual(__version__, "1.2.0")
+        self.assertEqual(__version__, "1.3.0")
 
     def test_scheduler_now_uses_database_utc_clock(self):
         repository = SQLiteRepository(":memory:")
@@ -48,7 +48,7 @@ class SQLiteRepositoryTests(unittest.TestCase):
     def test_publication_record_survives_and_rejects_payload_change(self):
         repository = SQLiteRepository(":memory:")
         payload = {
-            "repository": "owner/repo", "remote": "origin", "branch": "agent-society/fix",
+            "repository": "owner/repo", "remote": "origin", "branch": "seed-society/fix",
             "base_branch": "main", "title": "Fix", "body": "Body",
             "base_head_sha": "base-sha",
             "changed_paths": ["a.py"], "workspace_digest": "digest", "check_names": ["tests"],

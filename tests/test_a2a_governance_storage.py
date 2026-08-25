@@ -4,7 +4,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     ConformanceAttestation,
     DelegationPolicy,
     DelegationRecord,
@@ -14,7 +14,7 @@ from agent_society_loop.domain import (
     PolicyVerdict,
     RemoteAgentRegistration,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 class GovernanceDomainTests(unittest.TestCase):

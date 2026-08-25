@@ -23,10 +23,10 @@ The CLI format records already observed scores, pass/fail decisions, and
 latencies. Evaluation does not call a model and is therefore replayable.
 
 ```bash
-agent-society evaluate examples/evaluation-spec.json --db evolution.db --json
-agent-society evaluations RUN_ID --db evolution.db --json
-agent-society promote RUN_ID --by operator --db evolution.db --json
-agent-society deployments --db evolution.db --json
+seed-society evaluate examples/evaluation-spec.json --db evolution.db --json
+seed-society evaluations RUN_ID --db evolution.db --json
+seed-society promote RUN_ID --by operator --db evolution.db --json
+seed-society deployments --db evolution.db --json
 ```
 
 Use a separate, trusted evaluation pipeline to produce the observed results.

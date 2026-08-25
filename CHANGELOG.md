@@ -21,7 +21,7 @@ All notable changes are documented here.
 ## 1.0.0 - 2026-07-17
 
 - Promoted the v0.10 local-model worker, PostgreSQL execution-plane, scheduler fencing, and transactional outbox runtime to the first stable product boundary.
-- Added `agent-society product self-test`, a single install-time readiness command that verifies release metadata, required operator docs, the deterministic double-loop demo, scheduler safety invariants, and A2A failure-safety scenarios.
+- Added `seed-society product self-test`, a single install-time readiness command that verifies release metadata, required operator docs, the deterministic double-loop demo, scheduler safety invariants, and A2A failure-safety scenarios.
 - Added a production runbook covering preflight, database authority, local model workers, health checks, recovery, outbox delivery, backup, upgrade, and supported boundaries.
 - Added a release checklist for local verification, package smoke tests, CI gates, release metadata, and GitHub Release notes.
 - Marked package metadata as production/stable while keeping the documented boundaries explicit: no hosted web control plane, no inbound A2A service, and no automatic exactly-once guarantee for external systems.
@@ -46,7 +46,7 @@ All notable changes are documented here.
 - Added atomic terminal goal reconciliation to fenced outcome commits so task, evidence, performance, events, claim, and goal state cannot diverge.
 - Added fenced approval pauses that persist the request, release ownership, restore the task to pending, pause the goal without consuming an attempt, and resume the goal transactionally after approval.
 - Added an optional PostgreSQL execution backend with JSONB state, normalized scheduler indexes, `FOR UPDATE SKIP LOCKED` discovery, monotonic fencing, process-generation protection, expiry recovery, approvals, and traces.
-- Added `--database-url`, `AGENT_SOCIETY_DATABASE_URL`, and `--postgres-schema` routing for supported execution-plane and approval commands; unsupported governance commands fail closed instead of falling back to SQLite.
+- Added `--database-url`, `SEED_SOCIETY_DATABASE_URL`, and `--postgres-schema` routing for supported execution-plane and approval commands; unsupported governance commands fail closed instead of falling back to SQLite.
 - Added shared SQLite/PostgreSQL conformance contracts for dependency ordering, competing consumers, lease renewal, release, takeover, stale-owner rejection, session supersession, terminal reconciliation, and approval pause/resume.
 - Added a PostgreSQL 17 CI service gate alongside the Python 3.10-3.14 SQLite matrix.
 - Documented the single-authority rule, trusted UTC clock assumption, SQLite same-host boundary, PostgreSQL execution-plane scope, graceful-drain behavior, and external exactly-once limitation.

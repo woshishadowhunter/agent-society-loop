@@ -20,9 +20,9 @@
 ### Task 1: Domain and Persistence
 
 **Files:**
-- Modify: `src/agent_society_loop/domain.py`
-- Modify: `src/agent_society_loop/storage.py`
-- Modify: `src/agent_society_loop/postgres_storage.py`
+- Modify: `src/seed_society/domain.py`
+- Modify: `src/seed_society/storage.py`
+- Modify: `src/seed_society/postgres_storage.py`
 - Test: `tests/test_experience.py`
 
 **Interfaces:**
@@ -39,8 +39,8 @@
 ### Task 2: Experience Distiller and Context Injection
 
 **Files:**
-- Create: `src/agent_society_loop/experience.py`
-- Modify: `src/agent_society_loop/memory.py`
+- Create: `src/seed_society/experience.py`
+- Modify: `src/seed_society/memory.py`
 - Test: `tests/test_experience.py`
 - Test: `tests/test_memory.py`
 
@@ -55,7 +55,7 @@
 ### Task 3: CLI and Documentation
 
 **Files:**
-- Modify: `src/agent_society_loop/cli.py`
+- Modify: `src/seed_society/cli.py`
 - Modify: `README.md`
 - Modify: `README.zh-CN.md`
 - Modify: `CHANGELOG.md`
@@ -63,10 +63,10 @@
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
-- `agent-society genome set AGENT_ID FILE --db DB --json`
-- `agent-society genome show AGENT_ID --db DB --json`
-- `agent-society experience distill GOAL_ID --db DB --json`
-- `agent-society experience list [--agent-id ID] [--task-type TYPE] --db DB --json`
+- `seed-society genome set AGENT_ID FILE --db DB --json`
+- `seed-society genome show AGENT_ID --db DB --json`
+- `seed-society experience distill GOAL_ID --db DB --json`
+- `seed-society experience list [--agent-id ID] [--task-type TYPE] --db DB --json`
 
 - [ ] Write failing CLI tests.
 - [ ] Implement parser and command handlers.

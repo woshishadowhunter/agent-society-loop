@@ -4,20 +4,20 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from agent_society_loop.a2a import A2ALimits
-from agent_society_loop.a2a_governance import (
+from seed_society.a2a import A2ALimits
+from seed_society.a2a_governance import (
     DelegationPolicyEvaluator,
     parse_a2a_tck_report,
     parse_policy_document,
 )
-from agent_society_loop.domain import (
+from seed_society.domain import (
     ConformanceAttestation,
     PolicyActivation,
     PolicyVerdict,
     RemoteAgentRegistration,
     Task,
 )
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.storage import SQLiteRepository
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "a2a-tck-passing.json"

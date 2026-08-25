@@ -5,7 +5,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import Mock, patch
 
-from agent_society_loop.http_transport import (
+from seed_society.http_transport import (
     HTTPDeadlineExceeded,
     _begin_response,
     _negotiate_tls,
@@ -54,7 +54,7 @@ class HTTPTransportDeadlineTests(unittest.TestCase):
                 released.set()
 
         with patch(
-            "agent_society_loop.http_transport.HTTPResponse",
+            "seed_society.http_transport.HTTPResponse",
             BlockingResponse,
         ):
             with self.assertRaises(HTTPDeadlineExceeded):

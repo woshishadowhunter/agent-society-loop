@@ -1,6 +1,6 @@
 import unittest
 
-from agent_society_loop.domain import (
+from seed_society.domain import (
     AgentGenome,
     AgentSelfModel,
     Artifact,
@@ -10,8 +10,8 @@ from agent_society_loop.domain import (
     Task,
     Verdict,
 )
-from agent_society_loop.evolution import GenomeRecombiner
-from agent_society_loop.storage import SQLiteRepository
+from seed_society.evolution import GenomeRecombiner
+from seed_society.storage import SQLiteRepository
 
 
 class GenomeRecombinationTests(unittest.TestCase):

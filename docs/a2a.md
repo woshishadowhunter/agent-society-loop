@@ -1,6 +1,6 @@
 # Guarded A2A Delegation / A2A 安全委派
 
-Agent Society Loop v0.7 supports the outbound A2A `1.0` `HTTP+JSON` polling subset with a fail-closed delegation trust control plane. This page is bilingual because remote trust and recovery rules must be unambiguous for operators.
+Seed Society v0.7 supports the outbound A2A `1.0` `HTTP+JSON` polling subset with a fail-closed delegation trust control plane. This page is bilingual because remote trust and recovery rules must be unambiguous for operators.
 
 智子社会循环 v0.7 支持出站 A2A `1.0` `HTTP+JSON` 轮询子集，并增加默认拒绝的委派信任控制面。本页采用中英双语，确保操作者能准确理解远端信任和故障恢复边界。
 
@@ -31,11 +31,11 @@ The following uses reserved example domains and placeholder identities. Replace 
 以下命令使用保留的示例域名和占位身份。必须替换为操作者批准的值，不能从模型输出中接受端点或摘要。
 
 ```bash
-agent-society a2a inspect-card \
+seed-society a2a inspect-card \
   https://agent.example/.well-known/agent-card.json --json
 
 export ACME_A2A_TOKEN="..."
-agent-society a2a register research-agent \
+seed-society a2a register research-agent \
   https://agent.example/.well-known/agent-card.json \
   --sha256 CARD_SHA256 \
   --interface https://agent.example/a2a \
@@ -44,16 +44,16 @@ agent-society a2a register research-agent \
   --allow-context review_feedback \
   --db society.db --json
 
-agent-society a2a agents --db society.db --json
-agent-society deployments --db society.db --json
+seed-society a2a agents --db society.db --json
+seed-society deployments --db society.db --json
 
 # Replace the all-zero digest in the example with the inspected card digest.
-agent-society a2a policy validate examples/a2a-policy.json --json
-agent-society a2a policy import examples/a2a-policy.json --db society.db --json
-agent-society a2a policy activate research POLICY_DIGEST \
+seed-society a2a policy validate examples/a2a-policy.json --json
+seed-society a2a policy import examples/a2a-policy.json --db society.db --json
+seed-society a2a policy activate research POLICY_DIGEST \
   --by operator --db society.db --json
 
-# Run outside Agent Society Loop. This is the pinned upstream revision for v0.7.
+# Run outside Seed Society. This is the pinned upstream revision for v0.7.
 git clone https://github.com/a2aproject/a2a-tck.git
 cd a2a-tck
 git checkout 5996b79f9cefa6fc390980e383e358a66fb9e49e
@@ -61,20 +61,20 @@ uv venv && uv pip install -e .
 ./run_tck.py --sut-host https://agent.example --transport http_json
 cd ..
 
-agent-society a2a attestation import research-agent \
+seed-society a2a attestation import research-agent \
   a2a-tck/reports/compatibility.json \
   --source-revision 5996b79f9cefa6fc390980e383e358a66fb9e49e \
   --tool-version 1.0.0 --db society.db --json
-agent-society a2a policy simulate research-agent research --db society.db --json
-agent-society a2a doctor research-agent research --db society.db --json
-agent-society a2a self-test --json
+seed-society a2a policy simulate research-agent research --db society.db --json
+seed-society a2a doctor research-agent research --db society.db --json
+seed-society a2a self-test --json
 
-agent-society run examples/a2a-goal-spec.json \
+seed-society run examples/a2a-goal-spec.json \
   --allow-remote --remote-timeout 60 --remote-max-polls 20 \
   --remote-poll-interval 0.25 --db society.db --json
-agent-society a2a delegations --db society.db --json
-agent-society a2a decisions remote-research-001 --db society.db --json
-agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
+seed-society a2a delegations --db society.db --json
+seed-society a2a decisions remote-research-001 --db society.db --json
+seed-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 ```
 
 Use `--allow-insecure-localhost` only for explicit `localhost`, `127.0.0.1`, or `::1` development services. Production interfaces require HTTPS. Redirects and URL-embedded credentials are rejected.

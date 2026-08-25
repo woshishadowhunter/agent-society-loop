@@ -1,4 +1,4 @@
-# Agent Society Loop Implementation Plan
+# Seed Society Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -23,10 +23,10 @@
 
 **Files:**
 - Create: `pyproject.toml`
-- Create: `src/agent_society_loop/__init__.py`
-- Create: `src/agent_society_loop/__main__.py`
-- Create: `src/agent_society_loop/domain.py`
-- Create: `src/agent_society_loop/ports.py`
+- Create: `src/seed_society/__init__.py`
+- Create: `src/seed_society/__main__.py`
+- Create: `src/seed_society/domain.py`
+- Create: `src/seed_society/ports.py`
 - Test: `tests/test_domain.py`
 
 **Interfaces:**
@@ -41,8 +41,8 @@
 ### Task 2: Durable SQLite Memory and Event Journal
 
 **Files:**
-- Create: `src/agent_society_loop/storage.py`
-- Create: `src/agent_society_loop/memory.py`
+- Create: `src/seed_society/storage.py`
+- Create: `src/seed_society/memory.py`
 - Test: `tests/test_storage.py`
 - Test: `tests/test_memory.py`
 
@@ -63,7 +63,7 @@
 ### Task 3: Transparent Agent Selection
 
 **Files:**
-- Create: `src/agent_society_loop/selection.py`
+- Create: `src/seed_society/selection.py`
 - Test: `tests/test_selection.py`
 
 **Interfaces:**
@@ -79,7 +79,7 @@
 ### Task 4: Goal Engine and Double Loop
 
 **Files:**
-- Create: `src/agent_society_loop/engine.py`
+- Create: `src/seed_society/engine.py`
 - Test: `tests/test_engine.py`
 
 **Interfaces:**
@@ -98,8 +98,8 @@
 ### Task 5: Deterministic Scenario and Provider Adapter
 
 **Files:**
-- Create: `src/agent_society_loop/deterministic.py`
-- Create: `src/agent_society_loop/providers.py`
+- Create: `src/seed_society/deterministic.py`
+- Create: `src/seed_society/providers.py`
 - Create: `examples/quantum_mug_launch.py`
 - Test: `tests/test_deterministic.py`
 - Test: `tests/test_providers.py`
@@ -117,7 +117,7 @@
 ### Task 6: CLI and JSON Goal Specifications
 
 **Files:**
-- Create: `src/agent_society_loop/cli.py`
+- Create: `src/seed_society/cli.py`
 - Create: `examples/goal-spec.json`
 - Test: `tests/test_cli.py`
 
@@ -128,7 +128,7 @@
 - [ ] Run CLI tests and verify expected failures.
 - [ ] Implement argument parsing and command handlers with stable JSON output.
 - [ ] Re-run CLI tests and the complete suite.
-- [ ] Run `python -m agent_society_loop demo --db :memory:` and verify a successful goal plus at least one retry.
+- [ ] Run `python -m seed_society demo --db :memory:` and verify a successful goal plus at least one retry.
 - [ ] Commit with `feat: add agent society command line interface`.
 
 ### Task 7: Bilingual Documentation and Open-Source Governance
@@ -169,8 +169,8 @@
 - [ ] Run `python -m unittest discover -s tests -v` and verify zero failures and warnings.
 - [ ] Run `python -m compileall -q src examples`.
 - [ ] Run `python -m pip install --upgrade build` only if `python -m build` is unavailable, then build sdist and wheel.
-- [ ] Create a temporary virtual environment, install the wheel, run `agent-society demo`, and inspect its event and status output.
+- [ ] Create a temporary virtual environment, install the wheel, run `seed-society demo`, and inspect its event and status output.
 - [ ] Review `git diff --check`, repository status, package contents, and secrets scan.
 - [ ] Commit any verification fixes with focused messages.
-- [ ] Create the public GitHub repository `woshishadowhunter/agent-society-loop`, push `main`, and verify GitHub Actions.
+- [ ] Create the public GitHub repository `woshishadowhunter/seed-society`, push `main`, and verify GitHub Actions.
 - [ ] Tag `v0.1.0` only after local and remote verification both pass.

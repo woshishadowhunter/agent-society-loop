@@ -153,7 +153,7 @@ class PostgreSQLRepository:
         except ImportError as error:
             raise RuntimeError(
                 "PostgreSQL support requires the postgres extra: "
-                "pip install 'agent-society-loop[postgres]'"
+                "pip install 'seed-society[postgres]'"
             ) from error
         self.database_url = database_url
         self.schema = schema

@@ -27,7 +27,7 @@ jobs:
       - name: Compile sources
         run: python -m compileall -q src examples
       - name: Run offline smoke test
-        run: agent-society demo --db smoke.db --goal-id ci-smoke --json
+        run: seed-society demo --db smoke.db --goal-id ci-smoke --json
 
   postgres:
     runs-on: ubuntu-latest
@@ -58,10 +58,10 @@ jobs:
         run: python -m unittest tests.test_postgres_storage -v
       - name: Run PostgreSQL operations smoke test
         env:
-          AGENT_SOCIETY_DATABASE_URL: ${{ env.SCHEDULER_POSTGRES_URL }}
+          SEED_SOCIETY_DATABASE_URL: ${{ env.SCHEDULER_POSTGRES_URL }}
         run: |
-          agent-society health --json
-          agent-society metrics --json
+          seed-society health --json
+          seed-society metrics --json
 
   container:
     runs-on: ubuntu-latest
@@ -70,13 +70,13 @@ jobs:
       - name: Validate Compose configuration
         env:
           POSTGRES_PASSWORD: ci-postgres-password
-          AGENT_SOCIETY_DATABASE_URL: postgresql://agent_society:ci-postgres-password@postgres:5432/agent_society
+          SEED_SOCIETY_DATABASE_URL: postgresql://agent_society:ci-postgres-password@postgres:5432/agent_society
           LOCAL_MODEL_API_KEY: ci-model-token
           WEBHOOK_URL: https://integrations.example/events
           WEBHOOK_TOKEN: ci-webhook-token
         run: docker compose config --quiet
       - name: Build non-root runtime image
-        run: docker build --tag agent-society-loop:ci .
+        run: docker build --tag seed-society:ci .
       - name: Run default SQLite health command
-        run: docker run --rm agent-society-loop:ci
+        run: docker run --rm seed-society:ci
 

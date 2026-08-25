@@ -3,7 +3,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-from agent_society_loop.github import GitHubIssueClient, GitHubPullRequestClient
+from seed_society.github import GitHubIssueClient, GitHubPullRequestClient
 
 
 class GitHubHandler(BaseHTTPRequestHandler):
@@ -67,7 +67,7 @@ class GitHubIssueClientTests(unittest.TestCase):
         self.assertEqual(issue.labels, ("bug",))
         self.assertEqual(GitHubHandler.received["path"], "/repos/owner/repo/issues/12")
         self.assertEqual(GitHubHandler.received["authorization"], "Bearer test-token")
-        self.assertIn("agent-society-loop", GitHubHandler.received["user_agent"])
+        self.assertIn("seed-society", GitHubHandler.received["user_agent"])
 
     def test_rejects_invalid_repository_and_issue_number(self):
         client = GitHubIssueClient(self.base_url)
@@ -130,7 +130,7 @@ class GitHubPullRequestClientTests(unittest.TestCase):
                 "private-token", f"http://127.0.0.1:{server.server_port}"
             )
             result = client.create_or_get(
-                "owner/repo", "agent-society/fix", "main", "Fix", "Body"
+                "owner/repo", "seed-society/fix", "main", "Fix", "Body"
             )
         finally:
             server.shutdown()
@@ -139,7 +139,7 @@ class GitHubPullRequestClientTests(unittest.TestCase):
 
         self.assertEqual(result.number, 21)
         self.assertEqual([item[0] for item in PullRequestHandler.requests], ["GET", "POST"])
-        self.assertIn("head=owner%3Aagent-society%2Ffix", PullRequestHandler.requests[0][1])
+        self.assertIn("head=owner%3Aseed-society%2Ffix", PullRequestHandler.requests[0][1])
         self.assertEqual(PullRequestHandler.requests[1][2]["base"], "main")
         self.assertEqual(PullRequestHandler.requests[1][3], "Bearer private-token")
 

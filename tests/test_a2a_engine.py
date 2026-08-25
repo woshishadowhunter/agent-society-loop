@@ -1,13 +1,13 @@
 import unittest
 
-from agent_society_loop.a2a import (
+from seed_society.a2a import (
     A2AHTTPClient,
     A2ALimits,
     A2ARemoteExecutor,
     A2ARemoteWorker,
 )
-from agent_society_loop.a2a_governance import DelegationPolicyEvaluator
-from agent_society_loop.domain import (
+from seed_society.a2a_governance import DelegationPolicyEvaluator
+from seed_society.domain import (
     AgentProfile,
     EvaluationRun,
     GoalStatus,
@@ -18,12 +18,12 @@ from agent_society_loop.domain import (
     TaskStatus,
     Verdict,
 )
-from agent_society_loop.engine import LoopEngine
-from agent_society_loop.memory import MemoryManager
-from agent_society_loop.ports import WorkerBlocked
-from agent_society_loop.selection import PerformanceWeightedSelector
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tracing import TraceRecorder
+from seed_society.engine import LoopEngine
+from seed_society.memory import MemoryManager
+from seed_society.ports import WorkerBlocked
+from seed_society.selection import PerformanceWeightedSelector
+from seed_society.storage import SQLiteRepository
+from seed_society.tracing import TraceRecorder
 from tests.a2a_fake_server import FakeA2AServer
 
 

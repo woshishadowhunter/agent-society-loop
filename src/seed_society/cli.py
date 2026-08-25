@@ -461,7 +461,7 @@ def _add_postgres_options(parser: argparse.ArgumentParser) -> None:
 
 def _open_repository(args):
     database_url = getattr(args, "database_url", None) or os.environ.get(
-        "AGENT_SOCIETY_DATABASE_URL", ""
+        "SEED_SOCIETY_DATABASE_URL", ""
     )
     if database_url:
         supported = {
@@ -494,7 +494,7 @@ def _open_repository(args):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agent-society",
+        prog="seed-society",
         description="Run auditable goal-driven societies of specialized agents.",
     )
     commands = parser.add_subparsers(dest="command", required=True)
@@ -536,7 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=[status.value for status in OutboxStatus],
     )
     outbox_list.add_argument("--limit", type=int, default=100)
-    outbox_list.add_argument("--db", default="agent-society.db")
+    outbox_list.add_argument("--db", default="seed-society.db")
     _add_postgres_options(outbox_list)
     outbox_list.add_argument("--json", action="store_true")
     outbox_dispatch = outbox_commands.add_parser(
@@ -552,7 +552,7 @@ def build_parser() -> argparse.ArgumentParser:
     outbox_dispatch.add_argument("--timeout", type=float, default=30.0)
     outbox_dispatch.add_argument("--watch", action="store_true")
     outbox_dispatch.add_argument("--poll-interval", type=float, default=1.0)
-    outbox_dispatch.add_argument("--db", default="agent-society.db")
+    outbox_dispatch.add_argument("--db", default="seed-society.db")
     _add_postgres_options(outbox_dispatch)
     outbox_dispatch.add_argument("--json", action="store_true")
     outbox_purge = outbox_commands.add_parser(
@@ -560,7 +560,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     outbox_purge.add_argument("--before", required=True)
     outbox_purge.add_argument("--limit", type=int, default=1000)
-    outbox_purge.add_argument("--db", default="agent-society.db")
+    outbox_purge.add_argument("--db", default="seed-society.db")
     _add_postgres_options(outbox_purge)
     outbox_purge.add_argument("--json", action="store_true")
 
@@ -569,20 +569,20 @@ def build_parser() -> argparse.ArgumentParser:
         ("metrics", "collect bounded operational counters"),
     ):
         operations = commands.add_parser(name, help=help_text)
-        operations.add_argument("--db", default="agent-society.db")
+        operations.add_argument("--db", default="seed-society.db")
         _add_postgres_options(operations)
         if name == "health":
             operations.add_argument("--worker-id")
         operations.add_argument("--json", action="store_true")
 
     demo = commands.add_parser("demo", help="run the offline quantum mug scenario")
-    demo.add_argument("--db", default="agent-society.db")
+    demo.add_argument("--db", default="seed-society.db")
     demo.add_argument("--goal-id", default="quantum-mug-demo")
     demo.add_argument("--json", action="store_true")
 
     run = commands.add_parser("run", help="run a JSON goal specification")
     run.add_argument("spec")
-    run.add_argument("--db", default="agent-society.db")
+    run.add_argument("--db", default="seed-society.db")
     run.add_argument("--allow-remote", action="store_true")
     run.add_argument("--remote-timeout", type=float, default=60.0)
     run.add_argument("--remote-max-polls", type=int, default=20)
@@ -593,7 +593,7 @@ def build_parser() -> argparse.ArgumentParser:
         "enqueue", help="plan a JSON goal specification for worker processes"
     )
     enqueue.add_argument("spec")
-    enqueue.add_argument("--db", default="agent-society.db")
+    enqueue.add_argument("--db", default="seed-society.db")
     _add_postgres_options(enqueue)
     enqueue.add_argument("--json", action="store_true")
 
@@ -612,24 +612,24 @@ def build_parser() -> argparse.ArgumentParser:
     worker_run.add_argument("--lease", type=int, default=30)
     worker_run.add_argument("--renew-interval", type=float, default=10.0)
     worker_run.add_argument("--poll-interval", type=float, default=1.0)
-    worker_run.add_argument("--db", default="agent-society.db")
+    worker_run.add_argument("--db", default="seed-society.db")
     _add_postgres_options(worker_run)
     worker_run.add_argument("--json", action="store_true")
 
     status = commands.add_parser("status", help="inspect goal state and artifacts")
     status.add_argument("goal_id")
-    status.add_argument("--db", default="agent-society.db")
+    status.add_argument("--db", default="seed-society.db")
     _add_postgres_options(status)
     status.add_argument("--json", action="store_true")
 
     events = commands.add_parser("events", help="inspect an ordered audit trail")
     events.add_argument("goal_id")
-    events.add_argument("--db", default="agent-society.db")
+    events.add_argument("--db", default="seed-society.db")
     _add_postgres_options(events)
     events.add_argument("--json", action="store_true")
 
     agents = commands.add_parser("agents", help="inspect agents and social memory")
-    agents.add_argument("--db", default="agent-society.db")
+    agents.add_argument("--db", default="seed-society.db")
     _add_postgres_options(agents)
     agents.add_argument("--json", action="store_true")
 
@@ -637,14 +637,14 @@ def build_parser() -> argparse.ArgumentParser:
         "evaluate", help="evaluate a challenger against a benchmark"
     )
     evaluate.add_argument("spec")
-    evaluate.add_argument("--db", default="agent-society.db")
+    evaluate.add_argument("--db", default="seed-society.db")
     evaluate.add_argument("--json", action="store_true")
 
     evaluations = commands.add_parser(
         "evaluations", help="inspect evaluation runs and case outcomes"
     )
     evaluations.add_argument("run_id", nargs="?")
-    evaluations.add_argument("--db", default="agent-society.db")
+    evaluations.add_argument("--db", default="seed-society.db")
     evaluations.add_argument("--json", action="store_true")
 
     promote = commands.add_parser(
@@ -652,13 +652,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     promote.add_argument("run_id")
     promote.add_argument("--by", required=True)
-    promote.add_argument("--db", default="agent-society.db")
+    promote.add_argument("--db", default="seed-society.db")
     promote.add_argument("--json", action="store_true")
 
     deployments = commands.add_parser(
         "deployments", help="inspect active task-type champions"
     )
-    deployments.add_argument("--db", default="agent-society.db")
+    deployments.add_argument("--db", default="seed-society.db")
     deployments.add_argument("--json", action="store_true")
 
     scheduler = commands.add_parser(
@@ -671,7 +671,7 @@ def build_parser() -> argparse.ArgumentParser:
         "workers", help="list durable worker sessions"
     )
     scheduler_workers.add_argument("--at")
-    scheduler_workers.add_argument("--db", default="agent-society.db")
+    scheduler_workers.add_argument("--db", default="seed-society.db")
     _add_postgres_options(scheduler_workers)
     scheduler_workers.add_argument("--json", action="store_true")
     scheduler_claims = scheduler_commands.add_parser(
@@ -679,14 +679,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scheduler_claims.add_argument("--goal-id")
     scheduler_claims.add_argument("--at")
-    scheduler_claims.add_argument("--db", default="agent-society.db")
+    scheduler_claims.add_argument("--db", default="seed-society.db")
     _add_postgres_options(scheduler_claims)
     scheduler_claims.add_argument("--json", action="store_true")
     scheduler_reap = scheduler_commands.add_parser(
         "reap", help="recover task claims expired at an explicit UTC time"
     )
     scheduler_reap.add_argument("--at", required=True)
-    scheduler_reap.add_argument("--db", default="agent-society.db")
+    scheduler_reap.add_argument("--db", default="seed-society.db")
     _add_postgres_options(scheduler_reap)
     scheduler_reap.add_argument("--json", action="store_true")
     scheduler_self_test = scheduler_commands.add_parser(
@@ -702,7 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inspect_card.add_argument("url")
     inspect_card.add_argument("--allow-insecure-localhost", action="store_true")
-    inspect_card.add_argument("--db", default="agent-society.db")
+    inspect_card.add_argument("--db", default="seed-society.db")
     inspect_card.add_argument("--json", action="store_true")
     register = a2a_commands.add_parser(
         "register", help="register an operator-pinned remote agent"
@@ -726,21 +726,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     register.add_argument("--allow-insecure-localhost", action="store_true")
-    register.add_argument("--db", default="agent-society.db")
+    register.add_argument("--db", default="seed-society.db")
     register.add_argument("--json", action="store_true")
     remote_agents = a2a_commands.add_parser("agents", help="list remote trust records")
-    remote_agents.add_argument("--db", default="agent-society.db")
+    remote_agents.add_argument("--db", default="seed-society.db")
     remote_agents.add_argument("--json", action="store_true")
     delegations = a2a_commands.add_parser(
         "delegations", help="inspect durable remote delegations"
     )
     delegations.add_argument("delegation_id", nargs="?")
-    delegations.add_argument("--db", default="agent-society.db")
+    delegations.add_argument("--db", default="seed-society.db")
     delegations.add_argument("--json", action="store_true")
     cancel = a2a_commands.add_parser("cancel", help="cancel a known remote task")
     cancel.add_argument("delegation_id")
     cancel.add_argument("--by", required=True)
-    cancel.add_argument("--db", default="agent-society.db")
+    cancel.add_argument("--db", default="seed-society.db")
     cancel.add_argument("--json", action="store_true")
 
     policy = a2a_commands.add_parser(
@@ -750,10 +750,10 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("validate", "import"):
         policy_file = policy_commands.add_parser(name, help=f"{name} a policy file")
         policy_file.add_argument("path")
-        policy_file.add_argument("--db", default="agent-society.db")
+        policy_file.add_argument("--db", default="seed-society.db")
         policy_file.add_argument("--json", action="store_true")
     policy_list = policy_commands.add_parser("list", help="list policies and activations")
-    policy_list.add_argument("--db", default="agent-society.db")
+    policy_list.add_argument("--db", default="seed-society.db")
     policy_list.add_argument("--json", action="store_true")
     policy_activate = policy_commands.add_parser(
         "activate", help="activate one exact policy digest for a task type"
@@ -761,14 +761,14 @@ def build_parser() -> argparse.ArgumentParser:
     policy_activate.add_argument("task_type")
     policy_activate.add_argument("policy_digest")
     policy_activate.add_argument("--by", required=True)
-    policy_activate.add_argument("--db", default="agent-society.db")
+    policy_activate.add_argument("--db", default="seed-society.db")
     policy_activate.add_argument("--json", action="store_true")
     policy_simulate = policy_commands.add_parser(
         "simulate", help="simulate current policy without persisting a decision"
     )
     policy_simulate.add_argument("agent_id")
     policy_simulate.add_argument("task_type")
-    policy_simulate.add_argument("--db", default="agent-society.db")
+    policy_simulate.add_argument("--db", default="seed-society.db")
     policy_simulate.add_argument("--json", action="store_true")
 
     attestation = a2a_commands.add_parser(
@@ -784,13 +784,13 @@ def build_parser() -> argparse.ArgumentParser:
     attestation_import.add_argument("path")
     attestation_import.add_argument("--source-revision", required=True)
     attestation_import.add_argument("--tool-version", required=True)
-    attestation_import.add_argument("--db", default="agent-society.db")
+    attestation_import.add_argument("--db", default="seed-society.db")
     attestation_import.add_argument("--json", action="store_true")
     attestation_list = attestation_commands.add_parser(
         "list", help="list imported conformance attestations"
     )
     attestation_list.add_argument("agent_id", nargs="?")
-    attestation_list.add_argument("--db", default="agent-society.db")
+    attestation_list.add_argument("--db", default="seed-society.db")
     attestation_list.add_argument("--json", action="store_true")
 
     doctor = a2a_commands.add_parser(
@@ -799,18 +799,18 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("agent_id")
     doctor.add_argument("task_type")
     doctor.add_argument("--allow-insecure-localhost", action="store_true")
-    doctor.add_argument("--db", default="agent-society.db")
+    doctor.add_argument("--db", default="seed-society.db")
     doctor.add_argument("--json", action="store_true")
     self_test = a2a_commands.add_parser(
         "self-test", help="run the local deterministic A2A reliability campaign"
     )
-    self_test.add_argument("--db", default="agent-society.db")
+    self_test.add_argument("--db", default="seed-society.db")
     self_test.add_argument("--json", action="store_true")
     decisions = a2a_commands.add_parser(
         "decisions", help="inspect durable remote policy decisions"
     )
     decisions.add_argument("goal_id", nargs="?")
-    decisions.add_argument("--db", default="agent-society.db")
+    decisions.add_argument("--db", default="seed-society.db")
     decisions.add_argument("--json", action="store_true")
 
     maintain = commands.add_parser(
@@ -820,7 +820,7 @@ def build_parser() -> argparse.ArgumentParser:
     maintain.add_argument("issue", type=int)
     maintain.add_argument("--workspace", required=True)
     maintain.add_argument("--goal-id")
-    maintain.add_argument("--db", default="agent-society.db")
+    maintain.add_argument("--db", default="seed-society.db")
     maintain.add_argument(
         "--apply",
         action="store_true",
@@ -833,7 +833,7 @@ def build_parser() -> argparse.ArgumentParser:
     maintain.add_argument("--base", default="main", help="pull-request base branch")
     maintain.add_argument("--remote", default="origin", help="Git remote to push")
     maintain.add_argument(
-        "--branch-prefix", default="agent-society/",
+        "--branch-prefix", default="seed-society/",
         help="required prefix for the current publication branch",
     )
     maintain.add_argument(
@@ -848,13 +848,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     traces = commands.add_parser("traces", help="inspect linked execution spans")
     traces.add_argument("goal_id")
-    traces.add_argument("--db", default="agent-society.db")
+    traces.add_argument("--db", default="seed-society.db")
     _add_postgres_options(traces)
     traces.add_argument("--json", action="store_true")
 
     approvals = commands.add_parser("approvals", help="inspect durable approvals")
     approvals.add_argument("goal_id")
-    approvals.add_argument("--db", default="agent-society.db")
+    approvals.add_argument("--db", default="seed-society.db")
     _add_postgres_options(approvals)
     approvals.add_argument("--json", action="store_true")
 
@@ -862,7 +862,7 @@ def build_parser() -> argparse.ArgumentParser:
         decision = commands.add_parser(name, help=f"{name} a pending tool call")
         decision.add_argument("approval_id")
         decision.add_argument("--by", required=True)
-        decision.add_argument("--db", default="agent-society.db")
+        decision.add_argument("--db", default="seed-society.db")
         _add_postgres_options(decision)
         decision.add_argument("--json", action="store_true")
 
@@ -872,13 +872,13 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("title")
     add.add_argument("content")
     add.add_argument("--tag", action="append", default=[])
-    add.add_argument("--db", default="agent-society.db")
+    add.add_argument("--db", default="seed-society.db")
     add.add_argument("--json", action="store_true")
     search = knowledge_commands.add_parser("search", help="search knowledge")
     search.add_argument("query")
     search.add_argument("--tag", action="append", default=[])
     search.add_argument("--limit", type=int, default=5)
-    search.add_argument("--db", default="agent-society.db")
+    search.add_argument("--db", default="seed-society.db")
     search.add_argument("--json", action="store_true")
 
     genome = commands.add_parser("genome", help="manage auditable agent seed genomes")
@@ -886,12 +886,12 @@ def build_parser() -> argparse.ArgumentParser:
     genome_set = genome_commands.add_parser("set", help="save an agent genome file")
     genome_set.add_argument("agent_id")
     genome_set.add_argument("path")
-    genome_set.add_argument("--db", default="agent-society.db")
+    genome_set.add_argument("--db", default="seed-society.db")
     _add_postgres_options(genome_set)
     genome_set.add_argument("--json", action="store_true")
     genome_show = genome_commands.add_parser("show", help="inspect an agent genome")
     genome_show.add_argument("agent_id")
-    genome_show.add_argument("--db", default="agent-society.db")
+    genome_show.add_argument("--db", default="seed-society.db")
     _add_postgres_options(genome_show)
     genome_show.add_argument("--json", action="store_true")
     genome_recombine = genome_commands.add_parser(
@@ -900,7 +900,7 @@ def build_parser() -> argparse.ArgumentParser:
     genome_recombine.add_argument("child_id")
     genome_recombine.add_argument("--parents", nargs="+", required=True)
     genome_recombine.add_argument("--task-type", required=True)
-    genome_recombine.add_argument("--db", default="agent-society.db")
+    genome_recombine.add_argument("--db", default="seed-society.db")
     _add_postgres_options(genome_recombine)
     genome_recombine.add_argument("--json", action="store_true")
 
@@ -914,7 +914,7 @@ def build_parser() -> argparse.ArgumentParser:
         "distill", help="distill reviewed attempts for one goal"
     )
     experience_distill.add_argument("goal_id")
-    experience_distill.add_argument("--db", default="agent-society.db")
+    experience_distill.add_argument("--db", default="seed-society.db")
     _add_postgres_options(experience_distill)
     experience_distill.add_argument("--json", action="store_true")
     experience_list = experience_commands.add_parser(
@@ -924,7 +924,7 @@ def build_parser() -> argparse.ArgumentParser:
     experience_list.add_argument("--task-type")
     experience_list.add_argument("--goal-id")
     experience_list.add_argument("--limit", type=int, default=100)
-    experience_list.add_argument("--db", default="agent-society.db")
+    experience_list.add_argument("--db", default="seed-society.db")
     _add_postgres_options(experience_list)
     experience_list.add_argument("--json", action="store_true")
 
@@ -944,7 +944,7 @@ def build_parser() -> argparse.ArgumentParser:
         "(same dry/apply mode); decays then lower mneme importance so "
         "forgotten seeds stop being injected",
     )
-    consolidate.add_argument("--db", default="agent-society.db")
+    consolidate.add_argument("--db", default="seed-society.db")
     _add_postgres_options(consolidate)
     consolidate.add_argument("--json", action="store_true")
 
@@ -955,7 +955,7 @@ def build_parser() -> argparse.ArgumentParser:
     mneme_sync = mneme_commands.add_parser(
         "sync", help="push promoted society seeds into dsh-mneme"
     )
-    mneme_sync.add_argument("--db", default="agent-society.db")
+    mneme_sync.add_argument("--db", default="seed-society.db")
     mneme_sync.add_argument("--mneme-dir", default="~/.dsh/memory")
     mneme_sync.add_argument(
         "--type",
@@ -976,7 +976,7 @@ def build_parser() -> argparse.ArgumentParser:
     mneme_import = mneme_commands.add_parser(
         "import", help="import non-society mneme entries into knowledge seeds"
     )
-    mneme_import.add_argument("--db", default="agent-society.db")
+    mneme_import.add_argument("--db", default="seed-society.db")
     mneme_import.add_argument("--mneme-dir", default="~/.dsh/memory")
     mneme_import.add_argument(
         "--type",

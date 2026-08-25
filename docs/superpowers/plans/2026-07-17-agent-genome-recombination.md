@@ -22,8 +22,8 @@
 ### Task 1: Domain Report and Recombiner Core
 
 **Files:**
-- Modify: `src/agent_society_loop/domain.py`
-- Create: `src/agent_society_loop/evolution.py`
+- Modify: `src/seed_society/domain.py`
+- Create: `src/seed_society/evolution.py`
 - Test: `tests/test_evolution.py`
 
 **Interfaces:**
@@ -42,7 +42,7 @@ Add tests that create two parent genomes plus PASS/FAIL experience, then assert:
 - child is saved in repository
 
 Run: `python -m unittest tests.test_evolution -v`
-Expected: FAIL because `agent_society_loop.evolution` does not exist.
+Expected: FAIL because `seed_society.evolution` does not exist.
 
 - [x] **Step 2: Implement minimal domain/report and recombiner**
 
@@ -57,12 +57,12 @@ Expected: PASS.
 ### Task 2: Rejection Paths and CLI Command
 
 **Files:**
-- Modify: `src/agent_society_loop/cli.py`
+- Modify: `src/seed_society/cli.py`
 - Test: `tests/test_cli.py`
 - Test: `tests/test_evolution.py`
 
 **Interfaces:**
-- CLI: `agent-society genome recombine CHILD_ID --parents A B --task-type TYPE --db DB --json`
+- CLI: `seed-society genome recombine CHILD_ID --parents A B --task-type TYPE --db DB --json`
 
 - [x] **Step 1: Write failing tests**
 
@@ -86,7 +86,7 @@ Expected: PASS.
 ### Task 3: Docs, Version, and Product Verification
 
 **Files:**
-- Modify: `src/agent_society_loop/__init__.py`
+- Modify: `src/seed_society/__init__.py`
 - Modify: `pyproject.toml`
 - Modify: `README.md`
 - Modify: `README.zh-CN.md`
@@ -113,7 +113,7 @@ Document `genome recombine`, the candidate-only safety boundary, and v1.2 change
 
 Run:
 - `python -W error::ResourceWarning -m unittest discover -s tests -q`
-- `python -m agent_society_loop.cli product self-test --json`
+- `python -m seed_society.cli product self-test --json`
 - `python -m compileall -q src tests examples`
 - `python -m build`
 

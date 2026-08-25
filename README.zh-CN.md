@@ -1,4 +1,4 @@
-# 智子社会循环（Agent Society Loop）
+# 智子社会循环（Seed Society）
 
 简体中文 | [English](README.md)
 
@@ -6,8 +6,8 @@
 
 运行一条离线命令，就能看到一个故意不完整的结果被拒绝、修正并通过。目标、任务、产物、质检报告、选人理由和状态变化都会写入 SQLite。
 
-[![CI](https://github.com/woshishadowhunter/agent-society-loop/actions/workflows/ci.yml/badge.svg)](https://github.com/woshishadowhunter/agent-society-loop/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/woshishadowhunter/agent-society-loop)](https://github.com/woshishadowhunter/agent-society-loop/releases/latest)
+[![CI](https://github.com/woshishadowhunter/seed-society/actions/workflows/ci.yml/badge.svg)](https://github.com/woshishadowhunter/seed-society/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/woshishadowhunter/seed-society)](https://github.com/woshishadowhunter/seed-society/releases/latest)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -16,9 +16,9 @@
 需要 Python 3.10 或更高版本。
 
 ```bash
-python -m pip install https://github.com/woshishadowhunter/agent-society-loop/releases/download/v1.2.0/agent_society_loop-1.2.0-py3-none-any.whl
-agent-society demo --db demo.db
-agent-society product self-test --json
+python -m pip install https://github.com/woshishadowhunter/seed-society/releases/download/v1.2.0/seed_society-1.2.0-py3-none-any.whl
+seed-society demo --db demo.db
+seed-society product self-test --json
 ```
 
 预期演示结果：
@@ -44,18 +44,18 @@ Goal quantum-mug-demo: succeeded (4/4 tasks, 1 retries)
 需要 Python 3.10 或更高版本。
 
 ```bash
-git clone https://github.com/woshishadowhunter/agent-society-loop.git
-cd agent-society-loop
+git clone https://github.com/woshishadowhunter/seed-society.git
+cd seed-society
 python -m pip install -e .
-agent-society demo --db demo.db
+seed-society demo --db demo.db
 ```
 
 查看完整执行证据：
 
 ```bash
-agent-society status quantum-mug-demo --db demo.db --json
-agent-society events quantum-mug-demo --db demo.db
-agent-society agents --db demo.db --json
+seed-society status quantum-mug-demo --db demo.db --json
+seed-society events quantum-mug-demo --db demo.db
+seed-society agents --db demo.db --json
 ```
 
 `product self-test` 是 v1.0 的安装验收命令。它不需要模型 API Key，会检查发布版本、必需运维文档、确定性双循环演示、调度租约安全不变量，以及本地 A2A 故障安全场景。
@@ -83,7 +83,7 @@ flowchart LR
 ## 运行自己的目标
 
 ```bash
-agent-society run examples/goal-spec.json --db my-goal.db --json
+seed-society run examples/goal-spec.json --db my-goal.db --json
 ```
 
 JSON 文件可以定义目标、任务依赖、初始产出、返工产出和验收标准。例如：
@@ -115,28 +115,28 @@ JSON 文件可以定义目标、任务依赖、初始产出、返工产出和验
 ```bash
 export MODEL_API_KEY="..."
 export MODEL_ID="your-model"
-agent-society maintain owner/repository 123 --workspace . --db maintain.db --json
-agent-society traces maintain-owner-repository-123 --db maintain.db --json
+seed-society maintain owner/repository 123 --workspace . --db maintain.db --json
+seed-society traces maintain-owner-repository-123 --db maintain.db --json
 ```
 
 v0.3 还提供显式开启的受控执行模式。验证命令由操作者预先配置，模型只能按名称选择，不能提供 Shell 文本：
 
 ```bash
-agent-society maintain owner/repository 123 \
+seed-society maintain owner/repository 123 \
   --workspace . --db ../maintain.db --apply \
   --check "tests=python -m unittest discover -s tests -v" --json
 ```
 
-每次内容寻址写入和命名检查前，目标都会暂停。使用 `agent-society approve APPROVAL_ID --by NAME --db ../maintain.db` 批准后，重复原 `maintain` 命令即可恢复。写入采用原子替换并拒绝过期哈希，检查无 Shell、有限时且限制输出，修改前内容可持久恢复。确定性质检门禁会拒绝缺少验证证据的 PASS，并要求所有检查都在当前工作区摘要上真实通过。这个模式仍不会提交、推送或创建 Pull Request。
+每次内容寻址写入和命名检查前，目标都会暂停。使用 `seed-society approve APPROVAL_ID --by NAME --db ../maintain.db` 批准后，重复原 `maintain` 命令即可恢复。写入采用原子替换并拒绝过期哈希，检查无 Shell、有限时且限制输出，修改前内容可持久恢复。确定性质检门禁会拒绝缺少验证证据的 PASS，并要求所有检查都在当前工作区摘要上真实通过。这个模式仍不会提交、推送或创建 Pull Request。
 
 v0.4 可以从符合策略的功能分支发布已验证结果。数据库必须放在工作区之外，并提供 GitHub Token：
 
 ```bash
 export GITHUB_TOKEN="..."
-agent-society maintain owner/repository 123 \
+seed-society maintain owner/repository 123 \
   --workspace . --db ../maintain.db --apply \
   --check "tests=python -m unittest discover -s tests -v" \
-  --publish --base main --remote origin --branch-prefix "agent-society/" --json
+  --publish --base main --remote origin --branch-prefix "seed-society/" --json
 ```
 
 发布拥有独立的精确审批，包含基线 HEAD、分支策略、变更路径、工作区摘要、检查、标题和最终 PR 正文。系统只暂存目标拥有的路径，并通过提交、推送、创建 PR 的持久状态机幂等恢复；永远不会合并或强制推送。
@@ -146,10 +146,10 @@ agent-society maintain owner/repository 123 \
 v0.5 增加了可复现的冠军/挑战者门禁。评测会逐案例保存原始结果并给出推荐，但不会改变生产路由；晋级必须由操作者单独执行：
 
 ```bash
-agent-society evaluate examples/evaluation-spec.json --db evolution.db --json
-agent-society evaluations RUN_ID --db evolution.db --json
-agent-society promote RUN_ID --by operator --db evolution.db --json
-agent-society deployments --db evolution.db --json
+seed-society evaluate examples/evaluation-spec.json --db evolution.db --json
+seed-society evaluations RUN_ID --db evolution.db --json
+seed-society promote RUN_ID --by operator --db evolution.db --json
+seed-society deployments --db evolution.db --json
 ```
 
 默认策略要求至少 5 个案例、关键案例零失败、通过率不下降、平均分至少提升 2 分、单案例退化不超过 10 分，且 p95 延迟不超过冠军的 1.5 倍。晋级时会重新核对 Agent 与模型身份。某任务类型启用部署后，只允许已批准的冠军执行；冠军不可用时目标会阻塞，不会偷偷回退。详见[评测与晋级](docs/evaluation.md)。
@@ -161,30 +161,30 @@ agent-society deployments --db evolution.db --json
 v0.7 为 A2A `1.0` `HTTP+JSON` 轮询子集增加了信任控制面。发现和注册都不代表授权；每个新的生产委派必须同时通过四道独立门禁：精确身份已晋级部署、内容寻址策略已激活、官方 A2A TCK 证明通过且未过期、运行时显式提供 `run --allow-remote`。
 
 ```bash
-agent-society a2a inspect-card https://agent.example/.well-known/agent-card.json --json
+seed-society a2a inspect-card https://agent.example/.well-known/agent-card.json --json
 export ACME_A2A_TOKEN="..."
-agent-society a2a register research-agent \
+seed-society a2a register research-agent \
   https://agent.example/.well-known/agent-card.json \
   --sha256 CARD_SHA256 --interface https://agent.example/a2a \
   --skill research=deep-research --auth-env ACME_A2A_TOKEN --json
 
 # 先评测并晋级精确的 a2a:CARD_SHA256 身份。
 # 将 examples/a2a-policy.json 中的摘要替换为 CARD_SHA256。
-agent-society a2a policy validate examples/a2a-policy.json --json
-agent-society a2a policy import examples/a2a-policy.json --db society.db --json
-agent-society a2a policy activate research POLICY_DIGEST \
+seed-society a2a policy validate examples/a2a-policy.json --json
+seed-society a2a policy import examples/a2a-policy.json --db society.db --json
+seed-society a2a policy activate research POLICY_DIGEST \
   --by operator --db society.db --json
 
 # 在运行时之外执行固定版本的官方 TCK，再导入报告。
-agent-society a2a attestation import research-agent compatibility.json \
+seed-society a2a attestation import research-agent compatibility.json \
   --source-revision 5996b79f9cefa6fc390980e383e358a66fb9e49e \
   --tool-version 1.0.0 --db society.db --json
-agent-society a2a doctor research-agent research --db society.db --json
-agent-society a2a self-test --json
-agent-society run examples/a2a-goal-spec.json --db society.db --allow-remote --json
-agent-society a2a decisions remote-research-001 --db society.db --json
-agent-society a2a delegations --db society.db --json
-agent-society a2a cancel DELEGATION_ID --by operator --db society.db --json
+seed-society a2a doctor research-agent research --db society.db --json
+seed-society a2a self-test --json
+seed-society run examples/a2a-goal-spec.json --db society.db --allow-remote --json
+seed-society a2a decisions remote-research-001 --db society.db --json
+seed-society a2a delegations --db society.db --json
+seed-society a2a cancel DELEGATION_ID --by operator --db society.db --json
 ```
 
 策略决策会在构造请求和联网之前持久化。策略只能收紧上下文、请求/结果字节、轮询次数和总时限；ALLOW 与 DENY 都可审计。已经接受或完成的旧委派按原决策恢复，策略切换不会导致重发。
@@ -198,23 +198,23 @@ v0.9 将规划与执行分离。`enqueue` 负责校验并持久化任务图；�
 先用 SQLite 运行内置的双任务规范：
 
 ```bash
-agent-society enqueue examples/goal-spec.json --db society.db --json
-agent-society worker run --worker-id local-a \
+seed-society enqueue examples/goal-spec.json --db society.db --json
+seed-society worker run --worker-id local-a \
   --agent-id spec-research --agent-id spec-writing \
   --max-tasks 3 --db society.db --json
-agent-society status evidence-brief-demo --db society.db --json
+seed-society status evidence-brief-demo --db society.db --json
 ```
 
 SQLite 适合单机多进程。跨主机 worker 应安装可选 PostgreSQL 适配器，并让协调器、worker 与查询命令连接同一个 PostgreSQL 权威数据源：
 
 ```bash
 python -m pip install -e ".[postgres]"
-export AGENT_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
-agent-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
-agent-society worker run --worker-id worker-a \
+export SEED_SOCIETY_DATABASE_URL="postgresql://user:password@db.example/agents"
+seed-society enqueue examples/goal-spec.json --postgres-schema agent_society --json
+seed-society worker run --worker-id worker-a \
   --agent-id spec-research --agent-id spec-writing \
   --max-tasks 3 --postgres-schema agent_society --json
-agent-society status evidence-brief-demo --postgres-schema agent_society --json
+seed-society status evidence-brief-demo --postgres-schema agent_society --json
 ```
 
 PostgreSQL 使用带 `SKIP LOCKED` 的行锁发现就绪任务。两个后端都执行进程代际隔离、可续租 lease、任务级单调 fencing token、结果与目标状态原子对账，以及 fenced 审批暂停。worker 一旦丢失 session 或 claim，就会丢弃本地结果；收到 `SIGINT` 或 `SIGTERM` 时先排空当前 claim，再停止发现新任务。
@@ -222,10 +222,10 @@ PostgreSQL 使用带 `SKIP LOCKED` 的行锁发现就绪任务。两个后端都
 以下命令可验证 SQLite 所有权内核并检查调度证据：
 
 ```bash
-agent-society scheduler self-test --json
-agent-society scheduler workers --db society.db --json
-agent-society scheduler claims --goal-id GOAL_ID --db society.db --json
-agent-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --json
+seed-society scheduler self-test --json
+seed-society scheduler workers --db society.db --json
+seed-society scheduler claims --goal-id GOAL_ID --db society.db --json
+seed-society scheduler reap --at 2026-07-16T00:00:10+00:00 --db society.db --json
 ```
 
 自检会打开两个独立 SQLite 连接，真实验证五项不变量：同一任务只有一个有效领取者、只有精确持有者能够续租、接管后的 token 必须增大、旧 worker 晚到的结果必须零残留拒绝、当前 worker 的完整结果必须原子提交。同一套后端无关契约会在 CI 的 PostgreSQL 17 服务上执行。SQLite 的过期恢复继续遵守 v0.7 A2A 不重发规则；PostgreSQL 适配器只覆盖本地执行平面，不覆盖 A2A 治理和远程委派恢复。
@@ -239,9 +239,9 @@ OpenAI-compatible 端点；使用前需要修改模型名称和地址：
 
 ```bash
 export LOCAL_MODEL_API_KEY="replace-with-a-model-token"
-agent-society model doctor examples/local-model-agents.json --json
-agent-society enqueue examples/goal-spec.json --db society.db --json
-agent-society worker run --worker-id local-model-a \
+seed-society model doctor examples/local-model-agents.json --json
+seed-society enqueue examples/goal-spec.json --db society.db --json
+seed-society worker run --worker-id local-model-a \
   --model-config examples/local-model-agents.json \
   --max-tasks 3 --db society.db --json
 ```
@@ -254,10 +254,10 @@ Doctor 要求每个 Provider 返回完全符合要求的 JSON 探测结果。Wor
 `Idempotency-Key` 和 `X-Agent-Society-Delivery-Token`。
 
 ```bash
-agent-society health --db society.db --json
-agent-society metrics --db society.db --json
-agent-society outbox list --status pending --limit 100 --db society.db --json
-agent-society outbox purge --before 2026-06-01T00:00:00Z --db society.db --json
+seed-society health --db society.db --json
+seed-society metrics --db society.db --json
+seed-society outbox list --status pending --limit 100 --db society.db --json
+seed-society outbox purge --before 2026-06-01T00:00:00Z --db society.db --json
 ```
 
 PostgreSQL、Docker Compose、模型配置、Webhook 投递和剩余边界见
@@ -267,54 +267,54 @@ PostgreSQL、Docker Compose、模型配置、Webhook 投递和剩余边界见
 
 | 命令 | 用途 |
 | --- | --- |
-| `agent-society demo` | 运行离线量子咖啡杯演示 |
-| `agent-society product self-test` | 运行 v1.0 安装验收检查 |
-| `agent-society run SPEC.json` | 执行 JSON 任务图 |
-| `agent-society enqueue SPEC.json` | 只规划并持久化任务图，不立即执行 |
-| `agent-society worker run ...` | 领取、续租、执行、质检并提交队列任务 |
-| `agent-society model doctor CONFIG` | 探测配置模型的严格 JSON 兼容性 |
-| `agent-society status GOAL_ID` | 查看目标、任务、质检和产物 |
-| `agent-society events GOAL_ID` | 查看有序审计事件 |
-| `agent-society agents` | 查看 Agent 档案和绩效 |
-| `agent-society evaluate SPEC.json` | 用可复现 benchmark 比较挑战者 |
-| `agent-society evaluations [RUN_ID]` | 查看评测结论和逐案例结果 |
-| `agent-society promote RUN_ID --by NAME` | 显式晋级通过门禁的挑战者 |
-| `agent-society deployments` | 查看各任务类型当前冠军 |
-| `agent-society genome set AGENT_ID FILE` | 保存可审计的 Agent 种子基因档案 |
-| `agent-society genome show AGENT_ID` | 查看角色种子、自我模型、特质和谱系 |
-| `agent-society genome recombine CHILD_ID --parents A B --task-type TYPE` | 生成可审计的子代 genome 候选 |
-| `agent-society experience distill GOAL_ID` | 从已质检任务中蒸馏可复用经验 |
-| `agent-society experience list` | 按 Agent、任务类型或目标查看经验记录 |
-| `agent-society scheduler workers` | 查看 worker session 及过期状态 |
-| `agent-society scheduler claims [--goal-id ID]` | 查看租约与 fencing token 历史 |
-| `agent-society scheduler reap --at UTC` | 显式恢复过期领取 |
-| `agent-society scheduler self-test` | 验证五项本地调度安全不变量 |
-| `agent-society health [--worker-id ID]` | 查看数据库就绪状态及可选的 Worker 存活状态 |
-| `agent-society metrics` | 收集有界运维计数指标 |
-| `agent-society outbox list` | 分页、按状态查看持久副作用意图 |
-| `agent-society outbox dispatch ... [--watch]` | 持续投递指定 topic 的 Webhook |
-| `agent-society outbox purge --before UTC` | 有界清理过期的终态投递记录 |
-| `agent-society a2a inspect-card URL` | 检查 Agent Card 并计算摘要 |
-| `agent-society a2a register ...` | 固定卡片、接口和技能映射 |
-| `agent-society a2a agents` | 查看远端信任记录 |
-| `agent-society a2a policy ...` | 校验、导入、激活、列出或模拟委派策略 |
-| `agent-society a2a attestation ...` | 导入或查看官方 TCK 证明 |
-| `agent-society a2a doctor AGENT TASK_TYPE` | 不发送任务地检查八项生产就绪条件 |
-| `agent-society a2a self-test` | 运行五个本地 A2A 故障安全场景 |
-| `agent-society a2a decisions [GOAL_ID]` | 查看持久 ALLOW/DENY 证据 |
-| `agent-society a2a delegations [ID]` | 查看持久委派状态 |
-| `agent-society a2a cancel ID --by NAME` | 取消已知远端任务 |
-| `agent-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
-| `agent-society maintain ... --apply --check NAME=COMMAND` | 应用获批的本地修改并运行获批的命名检查 |
-| `agent-society maintain ... --publish` | 将已验证的合规分支发布为获批 Pull Request |
-| `agent-society traces GOAL_ID` | 查看模型与工具的关联 Trace |
-| `agent-society approvals GOAL_ID` | 查看待处理及已处理审批 |
-| `agent-society approve APPROVAL_ID` | 批准暂停中的写入或执行工具 |
-| `agent-society reject APPROVAL_ID` | 拒绝暂停中的写入或执行工具 |
-| `agent-society knowledge add` | 添加长期种子知识 |
-| `agent-society knowledge search` | 检索长期知识 |
+| `seed-society demo` | 运行离线量子咖啡杯演示 |
+| `seed-society product self-test` | 运行 v1.0 安装验收检查 |
+| `seed-society run SPEC.json` | 执行 JSON 任务图 |
+| `seed-society enqueue SPEC.json` | 只规划并持久化任务图，不立即执行 |
+| `seed-society worker run ...` | 领取、续租、执行、质检并提交队列任务 |
+| `seed-society model doctor CONFIG` | 探测配置模型的严格 JSON 兼容性 |
+| `seed-society status GOAL_ID` | 查看目标、任务、质检和产物 |
+| `seed-society events GOAL_ID` | 查看有序审计事件 |
+| `seed-society agents` | 查看 Agent 档案和绩效 |
+| `seed-society evaluate SPEC.json` | 用可复现 benchmark 比较挑战者 |
+| `seed-society evaluations [RUN_ID]` | 查看评测结论和逐案例结果 |
+| `seed-society promote RUN_ID --by NAME` | 显式晋级通过门禁的挑战者 |
+| `seed-society deployments` | 查看各任务类型当前冠军 |
+| `seed-society genome set AGENT_ID FILE` | 保存可审计的 Agent 种子基因档案 |
+| `seed-society genome show AGENT_ID` | 查看角色种子、自我模型、特质和谱系 |
+| `seed-society genome recombine CHILD_ID --parents A B --task-type TYPE` | 生成可审计的子代 genome 候选 |
+| `seed-society experience distill GOAL_ID` | 从已质检任务中蒸馏可复用经验 |
+| `seed-society experience list` | 按 Agent、任务类型或目标查看经验记录 |
+| `seed-society scheduler workers` | 查看 worker session 及过期状态 |
+| `seed-society scheduler claims [--goal-id ID]` | 查看租约与 fencing token 历史 |
+| `seed-society scheduler reap --at UTC` | 显式恢复过期领取 |
+| `seed-society scheduler self-test` | 验证五项本地调度安全不变量 |
+| `seed-society health [--worker-id ID]` | 查看数据库就绪状态及可选的 Worker 存活状态 |
+| `seed-society metrics` | 收集有界运维计数指标 |
+| `seed-society outbox list` | 分页、按状态查看持久副作用意图 |
+| `seed-society outbox dispatch ... [--watch]` | 持续投递指定 topic 的 Webhook |
+| `seed-society outbox purge --before UTC` | 有界清理过期的终态投递记录 |
+| `seed-society a2a inspect-card URL` | 检查 Agent Card 并计算摘要 |
+| `seed-society a2a register ...` | 固定卡片、接口和技能映射 |
+| `seed-society a2a agents` | 查看远端信任记录 |
+| `seed-society a2a policy ...` | 校验、导入、激活、列出或模拟委派策略 |
+| `seed-society a2a attestation ...` | 导入或查看官方 TCK 证明 |
+| `seed-society a2a doctor AGENT TASK_TYPE` | 不发送任务地检查八项生产就绪条件 |
+| `seed-society a2a self-test` | 运行五个本地 A2A 故障安全场景 |
+| `seed-society a2a decisions [GOAL_ID]` | 查看持久 ALLOW/DENY 证据 |
+| `seed-society a2a delegations [ID]` | 查看持久委派状态 |
+| `seed-society a2a cancel ID --by NAME` | 取消已知远端任务 |
+| `seed-society maintain OWNER/REPO ISSUE` | 生成经过质检的只读维护建议 |
+| `seed-society maintain ... --apply --check NAME=COMMAND` | 应用获批的本地修改并运行获批的命名检查 |
+| `seed-society maintain ... --publish` | 将已验证的合规分支发布为获批 Pull Request |
+| `seed-society traces GOAL_ID` | 查看模型与工具的关联 Trace |
+| `seed-society approvals GOAL_ID` | 查看待处理及已处理审批 |
+| `seed-society approve APPROVAL_ID` | 批准暂停中的写入或执行工具 |
+| `seed-society reject APPROVAL_ID` | 拒绝暂停中的写入或执行工具 |
+| `seed-society knowledge add` | 添加长期种子知识 |
+| `seed-society knowledge search` | 检索长期知识 |
 
-SQLite 命令使用 `--db`；执行平面命令还支持 `--database-url` 或 `AGENT_SOCIETY_DATABASE_URL`，并可用 `--postgres-schema` 隔离 schema。执行报告和查询命令支持 `--json`。
+SQLite 命令使用 `--db`；执行平面命令还支持 `--database-url` 或 `SEED_SOCIETY_DATABASE_URL`，并可用 `--postgres-schema` 隔离 schema。执行报告和查询命令支持 `--json`。
 
 ## 接入真实模型
 
@@ -323,7 +323,7 @@ SQLite 命令使用 `--db`；执行平面命令还支持 `--database-url` 或 `A
 ```python
 import os
 
-from agent_society_loop.providers import OpenAICompatibleProvider
+from seed_society.providers import OpenAICompatibleProvider
 
 provider = OpenAICompatibleProvider(
     api_key=os.environ["MODEL_API_KEY"],

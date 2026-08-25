@@ -18,7 +18,7 @@
 
 ---
 
-### Task 1: Agent Society Loop adoption surface
+### Task 1: Seed Society adoption surface
 
 **Files:**
 - Modify: `README.md`
@@ -29,14 +29,14 @@
 - Create: `tests/test_packaging.py`
 
 **Interfaces:**
-- Consumes: existing `agent-society demo`, `product self-test`, and `evaluate` commands.
+- Consumes: existing `seed-society demo`, `product self-test`, and `evaluate` commands.
 - Produces: a validated wheel, Trusted Publishing workflow, concise quick start, and reproducible evidence guide.
 
 - [ ] Write packaging tests that require canonical project URLs, package version alignment, and the publish workflow's OIDC permissions.
 - [ ] Run `python -m unittest tests.test_packaging -v` and confirm it fails because the workflow and metadata are absent.
 - [ ] Add the workflow and metadata, then revise both README introductions and add the evidence guide.
 - [ ] Run the focused test, full suite, build, metadata check, fresh-wheel smoke test, and deterministic self-test.
-- [ ] Commit the Agent Society Loop changes.
+- [ ] Commit the Seed Society changes.
 
 ### Task 2: Alaya Protocol adoption surface
 

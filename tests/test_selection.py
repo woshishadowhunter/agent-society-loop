@@ -1,7 +1,7 @@
 import unittest
 
-from agent_society_loop.domain import AgentProfile, PerformanceRecord, Task
-from agent_society_loop.selection import PerformanceWeightedSelector
+from seed_society.domain import AgentProfile, PerformanceRecord, Task
+from seed_society.selection import PerformanceWeightedSelector
 
 
 class PerformanceWeightedSelectorTests(unittest.TestCase):

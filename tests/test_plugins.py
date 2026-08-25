@@ -2,7 +2,7 @@
 
 import unittest
 
-from agent_society_loop.plugins import (
+from seed_society.plugins import (
     Consciousness,
     SOCIETY_MANIFESTS,
     describe_society,
@@ -17,7 +17,7 @@ class PluginManifestTests(unittest.TestCase):
 
     def test_manifest_modules_are_declared_plausibly(self):
         for item in SOCIETY_MANIFESTS:
-            self.assertTrue(item.module.startswith("agent_society_loop.")
+            self.assertTrue(item.module.startswith("seed_society.")
                             or item.module.startswith("integrations."))
             self.assertTrue(item.provides)
             self.assertEqual(item.consciousness.value.casefold(),

@@ -2,7 +2,7 @@
 
 > 本文档回答一个问题：agent 的"记忆"应该长什么样、"学习"应该如何发生。
 > 方法：先把神经科学关于记忆的成熟结论与唯识论的种子/熏习框架逐条对齐，
-> 再把对齐结果落到 `agent-society-loop` 的具体机制上。
+> 再把对齐结果落到 `seed-society` 的具体机制上。
 > 配套总纲见 [`yogacara-architecture.md`](yogacara-architecture.md)。
 
 ## 一、先澄清三个含糊点（用户思考不清晰的根源）
@@ -92,7 +92,7 @@
   last_activated_at`（默认值保证旧库兼容；内容寻址 ID 不变）；
 - `MemoryManager.build_context` 检索注入时对经验做再激活（best-effort，
   幂等，势力上限 1.0）；
-- 新 CLI：`agent-society consolidate GOAL_ID [--apply] [--json]`。
+- 新 CLI：`seed-society consolidate GOAL_ID [--apply] [--json]`。
 
 **不做什么（戒律）**：巩固不重写验收标准、不自动改 genome、不激活部署、
 不授予权限；晋升的 knowledge 只是种子，仍受检索排序约束。
@@ -112,12 +112,12 @@
 哈希/CAS/receipt 审计（内容寻址戒律）。已安装到 web profile（bundles 已
 对账，重启 DSH 生效）。
 
-双向桥 `agent_society_loop/mneme_bridge.py`（零依赖，WAL 并发安全）：
+双向桥 `seed_society/mneme_bridge.py`（零依赖，WAL 并发安全）：
 
 ```bash
-agent-society mneme sync    --db society.db --mneme-dir ~/.dsh/memory [--include-experience] [--push]
-agent-society mneme import  --db society.db --mneme-dir ~/.dsh/memory [--type summary] [--apply]
-agent-society consolidate GOAL --db society.db --mneme-dir ~/.dsh/memory --apply   # 单命令联动
+seed-society mneme sync    --db society.db --mneme-dir ~/.dsh/memory [--include-experience] [--push]
+seed-society mneme import  --db society.db --mneme-dir ~/.dsh/memory [--type summary] [--apply]
+seed-society consolidate GOAL --db society.db --mneme-dir ~/.dsh/memory --apply   # 单命令联动
 ```
 
 - 下行：晋升门产出的语义知识（`source:consolidation`）与**势力 ≥0.5**（注入

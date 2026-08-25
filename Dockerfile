@@ -4,8 +4,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-RUN groupadd --gid 10001 agent-society \
-    && useradd --uid 10001 --gid 10001 --create-home agent-society \
+RUN groupadd --gid 10001 seed-society \
+    && useradd --uid 10001 --gid 10001 --create-home seed-society \
     && mkdir --parents /data \
     && chown 10001:10001 /data
 
@@ -20,7 +20,7 @@ USER 10001:10001
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
-    CMD ["agent-society", "health", "--db", "/data/agent-society.db", "--json"]
+    CMD ["seed-society", "health", "--db", "/data/seed-society.db", "--json"]
 
-ENTRYPOINT ["agent-society"]
-CMD ["health", "--db", "/data/agent-society.db", "--json"]
+ENTRYPOINT ["seed-society"]
+CMD ["health", "--db", "/data/seed-society.db", "--json"]

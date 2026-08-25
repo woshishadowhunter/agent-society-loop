@@ -17,7 +17,7 @@ Add the next pragmatic evolution layer after v1.1: generate auditable child geno
 - A `GenomeRecombinationReport` domain record explaining parents, child, inherited traits, supporting experience, and safety notes.
 - Repository-neutral implementation using existing `list_agent_genomes`, `get_performance`, `list_experience`, and `save_agent_genome` methods.
 - CLI command:
-  - `agent-society genome recombine CHILD_ID --parents A B --task-type TYPE --db DB --json`
+  - `seed-society genome recombine CHILD_ID --parents A B --task-type TYPE --db DB --json`
 - Bilingual docs and version bump to `1.2.0`.
 
 ## Out of Scope

@@ -2,21 +2,21 @@ import hashlib
 import json
 import unittest
 
-from agent_society_loop.a2a import (
+from seed_society.a2a import (
     A2AAmbiguousSubmission,
     A2AHTTPClient,
     A2ALimits,
     A2AProtocolError,
     A2ARemoteExecutor,
 )
-from agent_society_loop.domain import (
+from seed_society.domain import (
     DelegationRecord,
     DelegationStatus,
     RemoteAgentRegistration,
     Task,
 )
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tracing import TraceRecorder
+from seed_society.storage import SQLiteRepository
+from seed_society.tracing import TraceRecorder
 from tests.a2a_fake_server import FakeA2AServer
 
 

@@ -5,14 +5,14 @@ import json
 import subprocess
 from pathlib import Path
 
-from agent_society_loop.domain import Artifact, GoalStatus, Task, ToolRisk, Verdict
-from agent_society_loop.github import GitHubIssue
-from agent_society_loop.maintenance import (
+from seed_society.domain import Artifact, GoalStatus, Task, ToolRisk, Verdict
+from seed_society.github import GitHubIssue
+from seed_society.maintenance import (
     build_maintenance_engine,
     create_maintenance_goal,
 )
-from agent_society_loop.storage import SQLiteRepository
-from agent_society_loop.tools import ToolContext
+from seed_society.storage import SQLiteRepository
+from seed_society.tools import ToolContext
 
 
 class ScriptedProvider:

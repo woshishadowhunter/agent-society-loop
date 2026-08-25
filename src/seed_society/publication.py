@@ -49,7 +49,7 @@ class WorkspacePublishPullRequestTool:
         check_names: tuple[str, ...],
         base_branch: str = "main",
         remote: str = "origin",
-        branch_prefix: str = "agent-society/",
+        branch_prefix: str = "seed-society/",
         timeout_seconds: float = 60.0,
     ):
         self.root = Path(root).resolve()
