@@ -6,6 +6,32 @@ from .domain import Artifact, ExperienceRecord, Review, Task, Verdict
 from .storage import SQLiteRepository
 
 
+def lessons_for_review(review: Review) -> tuple[str, ...]:
+    """Render a review into bounded lessons (success pattern / repair steps)."""
+    if review.verdict == Verdict.PASS:
+        summary = review.summary.strip()
+        return ((f"Successful pattern: {summary}",) if summary else ())
+    lessons = []
+    for defect in review.defects:
+        lesson = (
+            f"Repair defect at {defect.location}: {defect.issue}; "
+            f"{defect.suggestion}"
+        )
+        lessons.append(lesson)
+    if not lessons and review.summary.strip():
+        lessons.append(f"Failure pattern: {review.summary.strip()}")
+    return tuple(lessons)
+
+
+def tags_for_review(review: Review) -> tuple[str, ...]:
+    """Render a review into retrieval tags (verdict + defect locations)."""
+    tags = [f"verdict:{review.verdict.value.casefold()}"]
+    tags.extend(f"defect:{defect.location.casefold()}" for defect in review.defects)
+    if review.verdict == Verdict.PASS:
+        tags.append("pattern:success")
+    return tuple(tags)
+
+
 class ExperienceDistiller:
     """Turn durable review evidence into bounded lessons for future context."""
 
@@ -23,8 +49,8 @@ class ExperienceDistiller:
             for review in self.repository.list_reviews(goal_id, task.task_id):
                 artifact = self._artifact_for_attempt(artifacts, attempts, review)
                 agent_id = self._agent_for_attempt(artifact, attempts, review)
-                lessons = self._lessons(review)
-                tags = self._tags(review)
+                lessons = lessons_for_review(review)
+                tags = tags_for_review(review)
                 if not lessons or not agent_id:
                     continue
                 self.repository.save_experience(
@@ -64,27 +90,3 @@ class ExperienceDistiller:
         if agent_id:
             return agent_id
         return artifact.agent_id if artifact is not None else ""
-
-    @staticmethod
-    def _lessons(review: Review) -> tuple[str, ...]:
-        if review.verdict == Verdict.PASS:
-            summary = review.summary.strip()
-            return ((f"Successful pattern: {summary}",) if summary else ())
-        lessons = []
-        for defect in review.defects:
-            lesson = (
-                f"Repair defect at {defect.location}: {defect.issue}; "
-                f"{defect.suggestion}"
-            )
-            lessons.append(lesson)
-        if not lessons and review.summary.strip():
-            lessons.append(f"Failure pattern: {review.summary.strip()}")
-        return tuple(lessons)
-
-    @staticmethod
-    def _tags(review: Review) -> tuple[str, ...]:
-        tags = [f"verdict:{review.verdict.value.casefold()}"]
-        tags.extend(f"defect:{defect.location.casefold()}" for defect in review.defects)
-        if review.verdict == Verdict.PASS:
-            tags.append("pattern:success")
-        return tuple(tags)

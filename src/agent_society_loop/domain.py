@@ -757,6 +757,20 @@ class ExperienceRecord:
     tags: tuple[str, ...] = ()
     artifact_excerpt: str = ""
     created_at: str = field(default_factory=utc_now)
+    valence: float = 0.0
+    salience: float = 0.5
+    strength: float = 1.0
+    activations: int = 0
+    last_activated_at: str = ""
+
+    def __post_init__(self) -> None:
+        if not -1 <= float(self.valence) <= 1:
+            raise ValueError("experience valence must be between -1 and 1")
+        for name, value in (("salience", self.salience), ("strength", self.strength)):
+            if not 0 <= float(value) <= 1:
+                raise ValueError(f"experience {name} must be between 0 and 1")
+        if self.activations < 0:
+            raise ValueError("experience activations must not be negative")
 
     @classmethod
     def create(
@@ -768,6 +782,9 @@ class ExperienceRecord:
         *,
         lessons: Sequence[str],
         tags: Sequence[str] = (),
+        valence: float | None = None,
+        salience: float | None = None,
+        strength: float | None = None,
     ) -> ExperienceRecord:
         normalized_lessons = tuple(
             str(lesson).strip()[:240]
@@ -802,6 +819,19 @@ class ExperienceRecord:
             json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         excerpt = (artifact.content if artifact is not None else "")[:500]
+        normalized_valence = (
+            float(valence)
+            if valence is not None
+            else (
+                float(review.score) / 100.0
+                if review.verdict == Verdict.PASS
+                else -float(review.score) / 100.0
+            )
+        )
+        normalized_salience = 0.5 if salience is None else float(salience)
+        normalized_strength = (
+            0.5 + 0.5 * normalized_salience if strength is None else float(strength)
+        )
         return cls(
             f"experience-{digest[:16]}",
             task.goal_id,
@@ -814,7 +844,30 @@ class ExperienceRecord:
             normalized_lessons,
             _sorted_unique(tags),
             excerpt,
+            utc_now(),
+            min(1.0, max(-1.0, normalized_valence)),
+            min(1.0, max(0.0, normalized_salience)),
+            min(1.0, max(0.0, normalized_strength)),
+            0,
+            "",
         )
+
+    def reactivate(self, *, now: str, gain: float = 0.5) -> ExperienceRecord:
+        """Retrieval re-strengthens the trace (reconsolidation / 现行熏种子)."""
+        if not 0 < gain <= 1:
+            raise ValueError("experience reactivation gain must be in (0, 1]")
+        return replace(
+            self,
+            strength=min(1.0, self.strength + (1.0 - self.strength) * gain),
+            activations=self.activations + 1,
+            last_activated_at=now,
+        )
+
+    def decay(self, *, factor: float) -> ExperienceRecord:
+        """Multiply seed strength by an Ebbinghaus-style decay factor."""
+        if not 0 <= factor <= 1:
+            raise ValueError("experience decay factor must be between 0 and 1")
+        return replace(self, strength=max(0.0, self.strength * factor))
 
 
 @dataclass(frozen=True, slots=True)

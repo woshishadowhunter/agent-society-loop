@@ -1678,20 +1678,39 @@ class SQLiteRepository:
         data["tags"] = tuple(data.get("tags", ()))
         return ExperienceRecord(**data)
 
-    def save_experience(self, experience: ExperienceRecord) -> None:
-        self.connection.execute(
-            "INSERT INTO experience_records("
-            "experience_id, agent_id, task_type, goal_id, payload"
-            ") VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(experience_id) DO NOTHING",
-            (
-                experience.experience_id,
-                experience.agent_id,
-                experience.task_type,
-                experience.goal_id,
-                _dump(asdict(experience)),
-            ),
-        )
+    def save_experience(
+        self, experience: ExperienceRecord, *, overwrite: bool = False
+    ) -> None:
+        if overwrite:
+            self.connection.execute(
+                "INSERT INTO experience_records("
+                "experience_id, agent_id, task_type, goal_id, payload"
+                ") VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(experience_id) DO UPDATE SET "
+                "agent_id=excluded.agent_id, task_type=excluded.task_type, "
+                "goal_id=excluded.goal_id, payload=excluded.payload",
+                (
+                    experience.experience_id,
+                    experience.agent_id,
+                    experience.task_type,
+                    experience.goal_id,
+                    _dump(asdict(experience)),
+                ),
+            )
+        else:
+            self.connection.execute(
+                "INSERT INTO experience_records("
+                "experience_id, agent_id, task_type, goal_id, payload"
+                ") VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(experience_id) DO NOTHING",
+                (
+                    experience.experience_id,
+                    experience.agent_id,
+                    experience.task_type,
+                    experience.goal_id,
+                    _dump(asdict(experience)),
+                ),
+            )
         self.connection.commit()
 
     def list_experience(
@@ -1701,6 +1720,7 @@ class SQLiteRepository:
         task_type: str | None = None,
         goal_id: str | None = None,
         limit: int | None = None,
+        min_strength: float | None = None,
     ) -> list[ExperienceRecord]:
         if limit is not None and (
             isinstance(limit, bool)
@@ -1708,6 +1728,8 @@ class SQLiteRepository:
             or not 1 <= limit <= 10_000
         ):
             raise ValueError("experience list limit must be between 1 and 10000")
+        if min_strength is not None and not 0 <= min_strength <= 1:
+            raise ValueError("experience min_strength must be between 0 and 1")
         query = "SELECT payload FROM experience_records"
         clauses = []
         parameters: list[Any] = []
@@ -1719,6 +1741,11 @@ class SQLiteRepository:
             if value is not None:
                 clauses.append(f"{field}=?")
                 parameters.append(str(value))
+        if min_strength is not None:
+            clauses.append(
+                "COALESCE(json_extract(payload, '$.strength'), 1.0) >= ?"
+            )
+            parameters.append(min_strength)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY experience_id"

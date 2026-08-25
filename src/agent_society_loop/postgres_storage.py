@@ -724,20 +724,41 @@ class PostgreSQLRepository:
         ).fetchall()
         return [_genome(row["payload"]) for row in rows]
 
-    def save_experience(self, experience: ExperienceRecord) -> None:
-        self.connection.execute(
-            """INSERT INTO experience_records(
-                   experience_id, agent_id, task_type, goal_id, payload
-               ) VALUES (%s, %s, %s, %s, %s)
-               ON CONFLICT(experience_id) DO NOTHING""",
-            (
-                experience.experience_id,
-                experience.agent_id,
-                experience.task_type,
-                experience.goal_id,
-                self._j(experience),
-            ),
-        )
+    def save_experience(
+        self, experience: ExperienceRecord, *, overwrite: bool = False
+    ) -> None:
+        if overwrite:
+            self.connection.execute(
+                """INSERT INTO experience_records(
+                       experience_id, agent_id, task_type, goal_id, payload
+                   ) VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT(experience_id) DO UPDATE SET
+                       agent_id=excluded.agent_id,
+                       task_type=excluded.task_type,
+                       goal_id=excluded.goal_id,
+                       payload=excluded.payload""",
+                (
+                    experience.experience_id,
+                    experience.agent_id,
+                    experience.task_type,
+                    experience.goal_id,
+                    self._j(experience),
+                ),
+            )
+        else:
+            self.connection.execute(
+                """INSERT INTO experience_records(
+                       experience_id, agent_id, task_type, goal_id, payload
+                   ) VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT(experience_id) DO NOTHING""",
+                (
+                    experience.experience_id,
+                    experience.agent_id,
+                    experience.task_type,
+                    experience.goal_id,
+                    self._j(experience),
+                ),
+            )
 
     def list_experience(
         self,
@@ -746,6 +767,7 @@ class PostgreSQLRepository:
         task_type: str | None = None,
         goal_id: str | None = None,
         limit: int | None = None,
+        min_strength: float | None = None,
     ) -> list[ExperienceRecord]:
         if limit is not None and (
             isinstance(limit, bool)
@@ -753,6 +775,8 @@ class PostgreSQLRepository:
             or not 1 <= limit <= 10_000
         ):
             raise ValueError("experience list limit must be between 1 and 10000")
+        if min_strength is not None and not 0 <= min_strength <= 1:
+            raise ValueError("experience min_strength must be between 0 and 1")
         query = "SELECT payload FROM experience_records"
         clauses = []
         params: list[Any] = []
@@ -764,6 +788,11 @@ class PostgreSQLRepository:
             if value is not None:
                 clauses.append(f"{field}=%s")
                 params.append(str(value))
+        if min_strength is not None:
+            clauses.append(
+                "COALESCE(CAST(payload->>'strength' AS double precision), 1.0) >= %s"
+            )
+            params.append(min_strength)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY experience_id"

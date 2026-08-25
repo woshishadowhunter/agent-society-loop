@@ -6,12 +6,35 @@ import re
 from dataclasses import replace
 from typing import Sequence
 
+from .consolidation import EXPERIENCE_DORMANT_THRESHOLD
 from .domain import Goal, KnowledgeItem, PerformanceRecord, Task
 from .storage import SQLiteRepository
 
 
 def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[\w-]+", text.casefold()))
+
+
+def _reactivate_experience(repository, records: Sequence) -> None:
+    """Retrieval re-strengthens seeds (reconsolidation / 现行熏种子).
+
+    Best-effort: repositories without the overwrite-capable save method
+    simply skip this step instead of failing context assembly.
+    """
+    save = getattr(repository, "save_experience", None)
+    if save is None:
+        return
+    clock = getattr(repository, "scheduler_now", None)
+    timestamp = str(clock()) if callable(clock) else None
+    if not timestamp:
+        from .domain import utc_now
+
+        timestamp = utc_now()
+    for record in records:
+        try:
+            save(record.reactivate(now=timestamp), overwrite=True)
+        except (TypeError, AttributeError, ValueError):
+            continue
 
 
 class MemoryManager:
@@ -44,7 +67,12 @@ class MemoryManager:
             if review.verdict.value == "FAIL"
         ]
         knowledge = self.search_knowledge(task.description, (task.task_type,), limit=5)
-        experience = self.repository.list_experience(task_type=task.task_type, limit=5)
+        experience = self.repository.list_experience(
+            task_type=task.task_type,
+            limit=5,
+            min_strength=EXPERIENCE_DORMANT_THRESHOLD,
+        )
+        _reactivate_experience(self.repository, experience)
         return {
             "goal": {"title": goal.title, "description": goal.description},
             "task_context": dict(task.context),
