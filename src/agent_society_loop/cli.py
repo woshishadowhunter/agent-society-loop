@@ -30,6 +30,7 @@ from .a2a_governance import (
     parse_policy_document,
 )
 from .a2a_reliability import run_reliability_campaign
+from .consolidation import ConsolidationEngine
 from .deterministic import CriteriaReviewer, build_demo_engine
 from .domain import (
     AgentGenome,
@@ -513,6 +514,20 @@ def build_parser() -> argparse.ArgumentParser:
     model_doctor.add_argument("config")
     model_doctor.add_argument("--json", action="store_true")
 
+    plugins = commands.add_parser(
+        "plugins", help="list the eight-consciousness plugin manifest"
+    )
+    plugins.add_argument(
+        "--consciousness",
+        choices=["alaya", "manas", "mano", "panca", "sila"],
+    )
+    plugins.add_argument(
+        "--describe",
+        action="store_true",
+        help="render the full society doctrine map",
+    )
+    plugins.add_argument("--json", action="store_true")
+
     outbox = commands.add_parser("outbox", help="inspect and deliver outbox messages")
     outbox_commands = outbox.add_subparsers(dest="outbox_command", required=True)
     outbox_list = outbox_commands.add_parser("list", help="list durable outbox messages")
@@ -912,6 +927,67 @@ def build_parser() -> argparse.ArgumentParser:
     experience_list.add_argument("--db", default="agent-society.db")
     _add_postgres_options(experience_list)
     experience_list.add_argument("--json", action="store_true")
+
+    consolidate = commands.add_parser(
+        "consolidate",
+        help="sleep-replay consolidation: salience, decay, semantic promotion",
+    )
+    consolidate.add_argument("goal_id")
+    consolidate.add_argument(
+        "--apply",
+        action="store_true",
+        help="persist decay and promotion mutations (default is dry-run)",
+    )
+    consolidate.add_argument(
+        "--mneme-dir",
+        help="after consolidation, sync seeds into the dsh-mneme store "
+        "(same dry/apply mode); decays then lower mneme importance so "
+        "forgotten seeds stop being injected",
+    )
+    consolidate.add_argument("--db", default="agent-society.db")
+    _add_postgres_options(consolidate)
+    consolidate.add_argument("--json", action="store_true")
+
+    mneme = commands.add_parser(
+        "mneme", help="bridge the dsh-mneme cross-session memory store"
+    )
+    mneme_commands = mneme.add_subparsers(dest="mneme_command", required=True)
+    mneme_sync = mneme_commands.add_parser(
+        "sync", help="push promoted society seeds into dsh-mneme"
+    )
+    mneme_sync.add_argument("--db", default="agent-society.db")
+    mneme_sync.add_argument("--mneme-dir", default="~/.dsh/memory")
+    mneme_sync.add_argument(
+        "--type",
+        dest="memory_type",
+        default="project",
+        choices=["preference", "project", "decision", "history", "summary"],
+    )
+    mneme_sync.add_argument("--limit", type=int, default=10)
+    mneme_sync.add_argument(
+        "--include-experience",
+        action="store_true",
+        help="also push high-strength PASS experience lessons",
+    )
+    mneme_sync.add_argument(
+        "--push", action="store_true", help="write rows (default is dry-run)"
+    )
+    mneme_sync.add_argument("--json", action="store_true")
+    mneme_import = mneme_commands.add_parser(
+        "import", help="import non-society mneme entries into knowledge seeds"
+    )
+    mneme_import.add_argument("--db", default="agent-society.db")
+    mneme_import.add_argument("--mneme-dir", default="~/.dsh/memory")
+    mneme_import.add_argument(
+        "--type",
+        dest="memory_type",
+        choices=["preference", "project", "decision", "history", "summary"],
+    )
+    mneme_import.add_argument("--limit", type=int, default=5)
+    mneme_import.add_argument(
+        "--apply", action="store_true", help="write knowledge items (default is dry-run)"
+    )
+    mneme_import.add_argument("--json", action="store_true")
     return parser
 
 
@@ -947,6 +1023,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             )
             return 0 if value["passed"] else 1
+
+        if args.command == "plugins":
+            from .plugins import describe_society, list_plugins
+
+            if getattr(args, "describe", False):
+                value = describe_society()
+                _emit(
+                    value,
+                    args.json,
+                    (
+                        "Agent society doctrine: "
+                        f"{len(value['consciousnesses'])} consciousness groups, "
+                        f"{sum(len(group['plugins']) for group in value['consciousnesses'])} plugins"
+                    ),
+                )
+            else:
+                value = list_plugins(
+                    consciousness=getattr(args, "consciousness", None)
+                )
+                _emit(value, args.json, f"{len(value)} plugins")
+            return 0
 
         repository = _open_repository(args)
         if args.command == "health":
@@ -1605,6 +1702,91 @@ def main(argv: Sequence[str] | None = None) -> int:
             if value is None:
                 raise KeyError(f"agent genome not found: {args.agent_id}")
             _emit(value, args.json, f"Genome {value.agent_id}: {value.role_seed}")
+            return 0
+
+        if args.command == "consolidate":
+            if repository.get_goal(args.goal_id) is None:
+                raise KeyError(f"goal not found: {args.goal_id}")
+            value = ConsolidationEngine(repository).consolidate(
+                args.goal_id, apply=args.apply
+            )
+            if getattr(args, "mneme_dir", ""):
+                if not hasattr(repository, "append_event"):
+                    raise RuntimeError("mneme linkage requires the SQLite path")
+                from .mneme_bridge import push_seeds
+
+                mneme = push_seeds(
+                    repository,
+                    mneme_dir=args.mneme_dir,
+                    include_experience=True,
+                    apply=args.apply,
+                )
+                _emit(
+                    {"consolidation": value, "mneme": mneme},
+                    args.json,
+                    (
+                        f"Consolidated {value.goal_id}: {value.replayed_attempts} "
+                        f"replayed, {value.experiences_new} new experiences, "
+                        f"{len(value.promotion_candidates)} promotion candidates"
+                        f"{', applied' if value.applied else ' (dry-run)'}; "
+                        f"mneme: {mneme.pushed} pushed, {mneme.refreshed} refreshed, "
+                        f"{mneme.decay_refreshed} decay-refreshed"
+                    ),
+                )
+            else:
+                _emit(
+                    value,
+                    args.json,
+                    (
+                        f"Consolidated {value.goal_id}: {value.replayed_attempts} "
+                        f"replayed, {value.experiences_new} new experiences, "
+                        f"{len(value.promotion_candidates)} promotion candidates"
+                        f"{', applied' if value.applied else ' (dry-run)'}"
+                    ),
+                )
+            return 0
+
+        if args.command == "mneme":
+            if not hasattr(repository, "append_event"):
+                raise RuntimeError("the mneme bridge requires the SQLite path")
+            from .mneme_bridge import import_seeds, push_seeds
+
+            if args.mneme_command == "sync":
+                value = push_seeds(
+                    repository,
+                    mneme_dir=args.mneme_dir,
+                    memory_type=args.memory_type,
+                    limit=args.limit,
+                    include_experience=args.include_experience,
+                    apply=args.push,
+                )
+                _emit(
+                    value,
+                    args.json,
+                    (
+                        f"Mneme push: {value.planned} planned, {value.pushed} pushed, "
+                        f"{value.refreshed} refreshed, "
+                        f"{value.decay_refreshed} decay-refreshed"
+                        f"{'' if value.applied else ' (dry-run)'}"
+                    ),
+                )
+                return 0
+            value = import_seeds(
+                repository,
+                mneme_dir=args.mneme_dir,
+                memory_type=args.memory_type,
+                limit=args.limit,
+                apply=args.apply,
+            )
+            _emit(
+                value,
+                args.json,
+                (
+                    f"Mneme import: {value.candidates} candidates, "
+                    f"{value.imported} imported"
+                    f"{'' if value.applied else ' (dry-run)'}"
+                ),
+            )
             return 0
 
         if args.command == "experience":
